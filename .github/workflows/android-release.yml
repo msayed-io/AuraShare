@@ -1,0 +1,221 @@
+name: Android CI and Release
+run-name: Android ${{ github.event_name }} · ${{ github.ref_name }} · ${{ github.sha }}
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Do not interrupt signing/publication. PRs have independent secret-free groups.
+concurrency:
+  group: android-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  GRADLE_VERSION: '9.3.1'
+
+jobs:
+  validate:
+    name: Build, lint and test (no release secrets)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+      - name: Install pinned Android SDK packages
+        run: sdkmanager 'platforms;android-36.1' 'build-tools;36.0.0'
+      # This export has no gradlew JAR/scripts; install the exact declared Gradle instead.
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
+        with:
+          gradle-version: '9.3.1'
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
+      - name: Create disposable debug identity
+        run: |
+          export DEBUG_KEYSTORE_PATH="$RUNNER_TEMP/debug.keystore"
+          echo "DEBUG_KEYSTORE_PATH=$DEBUG_KEYSTORE_PATH" >> "$GITHUB_ENV"
+          umask 077
+          keytool -genkeypair -noprompt -keystore "$DEBUG_KEYSTORE_PATH" \
+            -storepass android -keypass android -alias androiddebugkey \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname 'CN=Android Debug,O=Android,C=US'
+      - name: Unit/integration tests, Android lint and debug APK
+        run: gradle --no-daemon --stacktrace testDebugUnitTest lintDebug assembleDebug
+      - name: Upload validation reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: android-validation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            app/build/reports/
+            app/build/test-results/
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Remove disposable debug key
+        if: always()
+        run: rm -f "$DEBUG_KEYSTORE_PATH"
+
+  signed-apk:
+    name: Version and sign installable APK
+    needs: validate
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: android-release
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      code: ${{ steps.version.outputs.code }}
+      tag: ${{ steps.version.outputs.tag }}
+      asset: ${{ steps.version.outputs.asset }}
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Allocate deterministic increasing version
+        id: version
+        run: |
+          set -euo pipefail
+          # run_number is persistent for this workflow; PRs/failures may leave harmless gaps.
+          version="1.0.${GITHUB_RUN_NUMBER}"
+          code="$((GITHUB_RUN_NUMBER + 1))"
+          test "$code" -le 2100000000
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "tag=android-v$version" >> "$GITHUB_OUTPUT"
+          echo "asset=AuraShare-$version.apk" >> "$GITHUB_OUTPUT"
+          echo "AURASHARE_VERSION_NAME=$version" >> "$GITHUB_ENV"
+          echo "AURASHARE_VERSION_CODE=$code" >> "$GITHUB_ENV"
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+      - name: Install pinned Android SDK packages
+        run: sdkmanager 'platforms;android-36.1' 'build-tools;36.0.0'
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
+        with:
+          gradle-version: '9.3.1'
+          # Never persist a cache written by a job that has handled signing credentials.
+          cache-read-only: true
+      - name: Materialize and validate protected signing identity
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          set -euo pipefail
+          test -n "$KEYSTORE_BASE64"
+          test -n "$ANDROID_KEYSTORE_PASSWORD"
+          test -n "$ANDROID_KEY_ALIAS"
+          umask 077
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.jks"
+          keytool -exportcert -keystore "$RUNNER_TEMP/release.jks" \
+            -storepass:env ANDROID_KEYSTORE_PASSWORD -alias "$ANDROID_KEY_ALIAS" \
+            > "$RUNNER_TEMP/release.cer"
+          expected="$(tr -d '\r\n' < .github/android-release-certificate.sha256)"
+          actual="$(sha256sum "$RUNNER_TEMP/release.cer" | cut -d ' ' -f 1)"
+          test "$actual" = "$expected"
+      - name: Build signed release APK
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/release.jks
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$ANDROID_KEY_PASSWORD"
+          gradle --no-daemon --no-configuration-cache --no-build-cache --stacktrace assembleRelease
+      - name: Verify APK signature, package and version; prepare assets
+        env:
+          RELEASE_ASSET: ${{ steps.version.outputs.asset }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: python3 .github/scripts/verify_android_release.py
+      - name: Upload verified signed release
+        id: upload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: android-release-${{ steps.version.outputs.version }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
+      - name: Remove signing material even on failure
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.jks" "$RUNNER_TEMP/release.cer"
+
+  publish:
+    name: Publish GitHub Release in this run
+    needs: signed-apk
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download only this run's signed artifact by ID
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          artifact-ids: ${{ needs.signed-apk.outputs.artifact-id }}
+          merge-multiple: true
+          path: dist
+      - name: Verify metadata and publish durable release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.signed-apk.outputs.version }}
+          VERSION_CODE: ${{ needs.signed-apk.outputs.code }}
+          RELEASE_TAG: ${{ needs.signed-apk.outputs.tag }}
+          RELEASE_ASSET: ${{ needs.signed-apk.outputs.asset }}
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum --check SHA256SUMS
+          python3 - <<'PY'
+          import json, os
+          with open('release.json') as f:
+              m = json.load(f)
+          for key, value in {
+              'commit': os.environ['GITHUB_SHA'],
+              'runId': os.environ['GITHUB_RUN_ID'],
+              'versionName': os.environ['VERSION'],
+              'versionCode': int(os.environ['VERSION_CODE']),
+              'asset': os.environ['RELEASE_ASSET'],
+              'tag': os.environ['RELEASE_TAG'],
+          }.items():
+              assert m[key] == value, f'Metadata mismatch: {key}'
+          PY
+          printf 'Signed, installable Android APK.\n\nVersion: %s (code %s)\nCommit: %s\nBuild and tests: https://github.com/%s/actions/runs/%s\n\nRequires Android 7.0/API 24 or newer. SHA256SUMS and release.json document integrity and the signing certificate.\n' \
+            "$VERSION" "$VERSION_CODE" "$GITHUB_SHA" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" > "$RUNNER_TEMP/release-notes.md"
+          if gh release view "$RELEASE_TAG" --json isDraft >/dev/null 2>&1; then
+            # A successful rerun is idempotent: never overwrite already-published binaries.
+            gh api "repos/$GH_REPO/git/ref/tags/$RELEASE_TAG" --jq .object.sha > "$RUNNER_TEMP/tag-sha"
+            test "$(cat "$RUNNER_TEMP/tag-sha")" = "$GITHUB_SHA"
+            if [ "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = false ]; then
+              mkdir "$RUNNER_TEMP/existing-release"
+              gh release download "$RELEASE_TAG" --dir "$RUNNER_TEMP/existing-release"
+              cmp SHA256SUMS "$RUNNER_TEMP/existing-release/SHA256SUMS"
+              (cd "$RUNNER_TEMP/existing-release" && sha256sum --check SHA256SUMS)
+              echo "Release already published and verified." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+          else
+            gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" --draft \
+              --title "AuraShare Android $VERSION" --notes-file "$RUNNER_TEMP/release-notes.md"
+          fi
+          gh release upload "$RELEASE_TAG" "$RELEASE_ASSET" SHA256SUMS release.json --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --latest
+          echo "Published https://github.com/$GITHUB_REPOSITORY/releases/tag/$RELEASE_TAG" >> "$GITHUB_STEP_SUMMARY"
