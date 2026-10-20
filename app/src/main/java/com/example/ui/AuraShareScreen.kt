@@ -54,7 +54,6 @@ import com.example.data.model.AuraMediaType
 import com.example.ui.components.AppleFolderDropdown
 import com.example.ui.components.DesktopCapsuleHeader
 import com.example.ui.components.FluidMetaballContainer
-import com.example.ui.components.ManualServerDialog
 import com.example.ui.components.MediaGridView
 import com.example.ui.components.PermissionGate
 import com.example.ui.components.TransferHistorySheet
@@ -105,7 +104,8 @@ fun AuraShareScreen(viewModel: MainViewModel) {
                             discoveryState = discoveryState,
                             currentTransfer = currentTransfer,
                             onRefreshDiscovery = { viewModel.refreshDiscovery() },
-                            onOpenSettings = { viewModel.showManualServerDialog(true) },
+                            onPair = { peer -> viewModel.pair(peer) },
+                            onDisconnect = { peer -> viewModel.disconnect(peer) },
                             onOpenHistory = { viewModel.showHistorySheet(true) },
                             onCapsuleBoundsChanged = { bounds -> capsuleBounds = bounds },
                             isBeingAttracted = dragController.isAttracted
@@ -259,34 +259,6 @@ fun AuraShareScreen(viewModel: MainViewModel) {
                     )
                 }
             }
-        }
-
-        // Manual Server Settings Dialog
-        if (uiState.showManualServerDialog) {
-            val currentHost = when (val state = discoveryState) {
-                is com.example.data.network.DiscoveryState.Connected -> state.host
-                is com.example.data.network.DiscoveryState.Discovered -> state.host
-                else -> ""
-            }
-            val currentPort = when (val state = discoveryState) {
-                is com.example.data.network.DiscoveryState.Connected -> state.port
-                is com.example.data.network.DiscoveryState.Discovered -> state.port
-                else -> 54321
-            }
-
-            ManualServerDialog(
-                initialHost = currentHost.ifEmpty { uiState.currentHost },
-                initialPort = if (currentPort > 0) currentPort else uiState.currentPort,
-                initialToken = uiState.pairingToken,
-                initialLegacy = uiState.useLegacyUpload,
-                onDismiss = { viewModel.showManualServerDialog(false) },
-                onConnect = { host, port, token, legacy ->
-                    viewModel.connectManually(host, port, token, legacy)
-                },
-                onImportUri = { uri ->
-                    viewModel.applyPairingUri(uri)
-                }
-            )
         }
 
         // Transfer History Bottom Sheet

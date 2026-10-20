@@ -36,6 +36,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
+import androidx.compose.material3.Button
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -52,6 +53,8 @@ import androidx.compose.ui.unit.sp
 import com.example.data.model.TransferRecord
 import com.example.data.model.TransferStatus
 import com.example.data.network.DiscoveryState
+import com.example.data.network.NearbyPeer
+import com.example.data.network.PeerStatus
 import com.example.ui.theme.GraphiteMuted
 import com.example.ui.theme.GraphiteTrack
 import com.example.ui.theme.MatteBorder
@@ -66,15 +69,16 @@ fun DesktopCapsuleHeader(
     discoveryState: DiscoveryState,
     currentTransfer: TransferRecord?,
     onRefreshDiscovery: () -> Unit,
-    onOpenSettings: () -> Unit,
+    onPair: (NearbyPeer) -> Unit,
+    onDisconnect: (NearbyPeer) -> Unit,
     onOpenHistory: () -> Unit,
     onCapsuleBoundsChanged: (androidx.compose.ui.geometry.Rect) -> Unit,
     isBeingAttracted: Boolean,
     modifier: Modifier = Modifier
 ) {
-    val isConnected = discoveryState is DiscoveryState.Connected
+    val nearby = (discoveryState as? DiscoveryState.Nearby)?.peers.orEmpty()
+    val isConnected = discoveryState is DiscoveryState.Connected || nearby.any { it.status == PeerStatus.CONNECTED }
     val isSearching = discoveryState is DiscoveryState.Searching
-
     val infiniteTransition = rememberInfiniteTransition(label = "pulse")
     val pulseScale by infiniteTransition.animateFloat(
         initialValue = 0.95f,
@@ -133,7 +137,6 @@ fun DesktopCapsuleHeader(
                         color = if (isBeingAttracted) PlatinumPrimary else MatteBorder,
                         shape = RoundedCornerShape(32.dp)
                     )
-                    .clickable { onOpenSettings() }
                     .padding(horizontal = 14.dp, vertical = 10.dp)
                     .testTag("desktop_capsule_status"),
                 contentAlignment = Alignment.Center
@@ -175,6 +178,7 @@ fun DesktopCapsuleHeader(
                             is DiscoveryState.Searching -> "جاري رصد الحاسوب..."
                             is DiscoveryState.Discovered -> "تم اكتشاف الحاسوب"
                             is DiscoveryState.Error -> "الخادم غير متصل"
+                            is DiscoveryState.Nearby -> if (isConnected) "مُتصل بالحاسوب" else "حواسيب قريبة"
                             DiscoveryState.Idle -> "جاهز للربط"
                         },
                         color = PlatinumPrimary,
@@ -186,23 +190,6 @@ fun DesktopCapsuleHeader(
 
             // Right Action Buttons (Icon-Only)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                IconButton(
-                    onClick = onOpenSettings,
-                    modifier = Modifier
-                        .size(42.dp)
-                        .clip(CircleShape)
-                        .background(MatteSurfaceCard)
-                        .border(1.dp, MatteBorderSubtle, CircleShape)
-                        .testTag("manual_settings_button")
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.SettingsEthernet,
-                        contentDescription = "إعدادات الربط اليدوي",
-                        tint = SilverSecondary,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
-
                 IconButton(
                     onClick = onOpenHistory,
                     modifier = Modifier
@@ -221,6 +208,33 @@ fun DesktopCapsuleHeader(
                 }
             }
         }
+
+        nearby.forEach { peer ->
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(peer.deviceName ?: "اسم الكمبيوتر غير متاح", color = SilverSecondary, fontSize = 13.sp, maxLines = 1)
+                    Text("عنوان الكمبيوتر الفعلي: ${peer.host}", color = GraphiteMuted, fontSize = 11.sp)
+                    Text(when(peer.status) {
+                        PeerStatus.CONNECTED -> "متصل وجاهز للإرسال"
+                        PeerStatus.PAIRING -> "بانتظار موافقتك على الكمبيوتر"
+                        PeerStatus.DISCONNECTED -> "انقطع الاتصال؛ يمكنك إعادة الاقتران"
+                        PeerStatus.NEARBY -> "متاح للاقتران"
+                    }, color = SilverSecondary, fontSize = 11.sp)
+                }
+                Button(onClick = { if (peer.status == PeerStatus.CONNECTED) onDisconnect(peer) else onPair(peer) },
+                    enabled = peer.status != PeerStatus.PAIRING,
+                    modifier = Modifier.testTag(if (peer.status == PeerStatus.CONNECTED) "disconnect_${peer.serviceName}" else "pair_${peer.serviceName}")) {
+                    Text(if (peer.status == PeerStatus.CONNECTED) "قطع الاتصال" else if (peer.status == PeerStatus.PAIRING) "بانتظار الموافقة" else "اقتران")
+                }
+            }
+        }
+
+        if (discoveryState is DiscoveryState.Error) Text(discoveryState.message, color = SilverSecondary, fontSize = 12.sp)
+        Text("على نفس الشبكة الخاصة؛ النقل غير مشفّر وأسماء الأجهزة غير موثّقة.", color = GraphiteMuted, fontSize = 10.sp)
 
         // Live High-Speed Streaming Progress Banner inside Capsule Area
         if (currentTransfer != null && currentTransfer.status == TransferStatus.STREAMING) {

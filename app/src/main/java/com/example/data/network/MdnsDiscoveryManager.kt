@@ -4,336 +4,178 @@ import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
-import android.util.Log
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
+import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.launch
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import org.json.JSONObject
-import java.io.IOException
-import java.net.InetAddress
-import java.util.concurrent.TimeUnit
+import java.net.Inet4Address
+import java.util.ArrayDeque
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 sealed class DiscoveryState {
-    object Idle : DiscoveryState()
-    data class Searching(val message: String = "جاري رصد حاسوب AuraShare عبر الشبكة...") : DiscoveryState()
+    data object Idle : DiscoveryState()
+    data class Searching(val message: String = "جاري رصد حاسوب AuraShare عبر mDNS...") : DiscoveryState()
+    data class Nearby(val peers: List<NearbyPeer>) : DiscoveryState()
     data class Discovered(val serviceName: String, val host: String, val port: Int) : DiscoveryState()
-    data class Connected(
-        val serviceName: String,
-        val host: String,
-        val port: Int,
-        val deviceName: String,
-        val requiresPairing: Boolean = false,
-        val protocolVersion: Int = 1
-    ) : DiscoveryState()
+    data class Connected(val serviceName: String, val host: String, val port: Int, val deviceName: String, val requiresPairing: Boolean = true, val protocolVersion: Int = 2) : DiscoveryState()
     data class Error(val message: String) : DiscoveryState()
+}
+data class NearbyPeer(val serviceName: String, val host: String, val port: Int, val deviceName: String? = null, val status: PeerStatus = PeerStatus.NEARBY, val serviceType: String = "_aurashare._tcp")
+enum class PeerStatus { NEARBY, PAIRING, CONNECTED, DISCONNECTED }
+
+/** Small seam for deterministic lifecycle tests; production delegates to Android's NsdManager. */
+interface NsdDiscoveryClient {
+    fun discover(type: String, protocol: Int, listener: NsdManager.DiscoveryListener)
+    fun stop(listener: NsdManager.DiscoveryListener)
+    fun resolve(info: NsdServiceInfo, listener: NsdManager.ResolveListener)
+}
+private class AndroidNsdDiscoveryClient(private val nsd: NsdManager?) : NsdDiscoveryClient {
+    override fun discover(type: String, protocol: Int, listener: NsdManager.DiscoveryListener) { nsd?.discoverServices(type, protocol, listener) }
+    override fun stop(listener: NsdManager.DiscoveryListener) { nsd?.stopServiceDiscovery(listener) }
+    override fun resolve(info: NsdServiceInfo, listener: NsdManager.ResolveListener) { nsd?.resolveService(info, listener) }
 }
 
 class MdnsDiscoveryManager(
     private val context: Context,
-    private val scope: CoroutineScope
+    private val scope: CoroutineScope,
+    private val nsdClient: NsdDiscoveryClient = AndroidNsdDiscoveryClient(context.getSystemService(Context.NSD_SERVICE) as? NsdManager)
 ) {
-    private val tag = "MdnsDiscoveryManager"
-    private val serviceType = "_aurashare._tcp"
-
-    private val nsdManager: NsdManager? = context.getSystemService(Context.NSD_SERVICE) as? NsdManager
-    private val wifiManager: WifiManager? = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-
-    private var multicastLock: WifiManager.MulticastLock? = null
-    private var isDiscovering = false
-    private var handshakeJob: Job? = null
-
+    private val wifi = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+    private val client = PairingClient()
+    private val peers = ConcurrentHashMap<String, NearbyPeer>()
+    private val jobs = ConcurrentHashMap<String, Job>()
+    private val tokens = ConcurrentHashMap<String, String>()
+    private val resolveQueue = ArrayDeque<ResolveItem>()
+    private val serviceEpoch = ConcurrentHashMap<String, Long>()
+    private val generation = AtomicLong(0)
+    private val stateLock = Any()
+    private var activeResolve: ResolveItem? = null
+    private var lock: WifiManager.MulticastLock? = null
+    @Volatile private var requested = false
+    @Volatile private var discovering = false
+    @Volatile private var activeRun: Run? = null
     private val _state = MutableStateFlow<DiscoveryState>(DiscoveryState.Idle)
     val state: StateFlow<DiscoveryState> = _state.asStateFlow()
 
-    var activeToken: String? = null
-
-    private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(4, TimeUnit.SECONDS)
-        .readTimeout(5, TimeUnit.SECONDS)
-        .writeTimeout(5, TimeUnit.SECONDS)
-        .retryOnConnectionFailure(false)
-        .build()
-
-    private val discoveryListener = object : NsdManager.DiscoveryListener {
-        override fun onStartDiscoveryFailed(serviceType: String?, errorCode: Int) {
-            Log.e(tag, "Start discovery failed: $errorCode")
-            _state.value = DiscoveryState.Error("تعذر تشغيل مستكشف الشبكة المحلية (رمز: $errorCode)")
-            isDiscovering = false
-            try {
-                nsdManager?.stopServiceDiscovery(this)
-            } catch (t: Throwable) {
-                Log.w(tag, "Failed to stop discovery on start failure: ${t.message}")
-            } finally {
-                releaseMulticastLock()
-            }
-        }
-
-        override fun onStopDiscoveryFailed(serviceType: String?, errorCode: Int) {
-            Log.e(tag, "Stop discovery failed: $errorCode")
-            isDiscovering = false
-            releaseMulticastLock()
-        }
-
-        override fun onDiscoveryStarted(regType: String?) {
-            Log.d(tag, "Service discovery started: $regType")
-            _state.value = DiscoveryState.Searching("جاري رصد حاسوب AuraShare عبر mDNS...")
-            isDiscovering = true
-        }
-
-        override fun onDiscoveryStopped(serviceType: String?) {
-            Log.d(tag, "Discovery stopped: $serviceType")
-            isDiscovering = false
-            releaseMulticastLock()
-        }
-
-        override fun onServiceFound(serviceInfo: NsdServiceInfo?) {
-            Log.d(tag, "Service found: ${serviceInfo?.serviceName}")
-            val name = serviceInfo?.serviceName ?: return
-            resolveService(serviceInfo)
-        }
-
-        override fun onServiceLost(serviceInfo: NsdServiceInfo?) {
-            Log.d(tag, "Service lost: ${serviceInfo?.serviceName}")
-            if (_state.value is DiscoveryState.Connected || _state.value is DiscoveryState.Discovered) {
-                _state.value = DiscoveryState.Searching("فُقد الاتصال بالحاسوب، جاري إعادة الرصد...")
-            }
-        }
+    private data class ResolveItem(val key: String, val info: NsdServiceInfo, val run: Long, val epoch: Long)
+    private class Run(val generation: Long) : NsdManager.DiscoveryListener {
+        lateinit var owner: MdnsDiscoveryManager
+        override fun onDiscoveryStarted(regType: String?) = owner.started(this)
+        override fun onDiscoveryStopped(serviceType: String?) = owner.stopped(this)
+        override fun onStartDiscoveryFailed(serviceType: String?, errorCode: Int) = owner.startFailed(this)
+        override fun onStopDiscoveryFailed(serviceType: String?, errorCode: Int) = owner.stopFailed(this)
+        override fun onServiceFound(info: NsdServiceInfo?) { owner.found(this, info) }
+        override fun onServiceLost(info: NsdServiceInfo?) { owner.lost(this, info) }
     }
+
+    private fun publish() { _state.value = if (peers.isEmpty()) DiscoveryState.Searching() else DiscoveryState.Nearby(peers.values.sortedBy { it.deviceName ?: "AuraShare (${it.host})" }) }
+    private fun current(run: Run) = activeRun === run && requested && generation.get() == run.generation
+    private fun type(value: String?) = value.orEmpty().trimEnd('.')
+    private fun key(name: String?, serviceType: String?) = "${name.orEmpty()}|${type(serviceType)}"
 
     fun startDiscovery() {
-        if (isDiscovering) return
-
-        try {
-            acquireMulticastLock()
-            _state.value = DiscoveryState.Searching("جاري البحث عن الحاسوب عبر الشبكة المحلية...")
-            nsdManager?.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, discoveryListener)
-            isDiscovering = true
-        } catch (t: Throwable) {
-            Log.e(tag, "Error starting mDNS discovery", t)
-            _state.value = DiscoveryState.Error("فشل بدء الرصد اللاسلكي: ${t.localizedMessage}")
-            isDiscovering = false
-            releaseMulticastLock()
-        }
+        synchronized(stateLock) { if (requested) return; requested = true }
+        val run = Run(generation.incrementAndGet()).also { it.owner = this }
+        activeRun = run; discovering = true // mark before the async callback: duplicate starts are rejected
+        jobs.values.forEach { it.cancel() }; jobs.clear(); tokens.clear(); peers.clear()
+        synchronized(stateLock) { resolveQueue.clear(); activeResolve = null; serviceEpoch.clear() }
+        publish(); acquireLock()
+        try { nsdClient.discover("_aurashare._tcp", NsdManager.PROTOCOL_DNS_SD, run) }
+        catch (_: Throwable) { if (current(run)) { requested = false; discovering = false; releaseLock(); _state.value = DiscoveryState.Error("فشل بدء اكتشاف الشبكة") } }
     }
+
+    private fun started(run: Run) { if (current(run)) { discovering = true; publish() } }
+    private fun stopped(run: Run) {
+        if (!current(run)) return
+        requested = false; discovering = false
+        synchronized(stateLock) { resolveQueue.clear(); activeResolve = null }
+        releaseLock(); publish()
+    }
+    private fun startFailed(run: Run) {
+        if (!current(run)) return
+        requested = false; discovering = false
+        synchronized(stateLock) { resolveQueue.clear(); activeResolve = null }
+        releaseLock(); _state.value = DiscoveryState.Error("تعذر تشغيل اكتشاف الشبكة"); scheduleRetry(run.generation)
+    }
+    private fun stopFailed(run: Run) { if (current(run)) { requested = false; discovering = false; releaseLock() } }
+    private fun scheduleRetry(ticket: Long) { scope.launch { delay(1_000); if (ticket == generation.get() && !requested) startDiscovery() } }
+
+    private fun found(run: Run, info: NsdServiceInfo?) { if (current(run) && info?.serviceName != null) enqueueResolve(run, info) }
+    private fun lost(run: Run, info: NsdServiceInfo?) {
+        if (!current(run) || info == null) return
+        val k = key(info.serviceName, info.serviceType); serviceEpoch[k] = (serviceEpoch[k] ?: 0L) + 1L
+        val oldToken = tokens.remove(k); jobs.remove(k)?.cancel(); peers.remove(k)
+        // Android permits one native resolve at a time. A lost service invalidates
+        // its result, but does not cancel the underlying native operation.
+        synchronized(stateLock) { resolveQueue.removeAll { it.key == k } }
+        if (oldToken != null) scope.launch(Dispatchers.IO) { runCatching { client.disconnect(PairingClient.Endpoint(info.host?.hostAddress ?: return@launch, info.port), oldToken) } }
+        publish(); resolveNext()
+    }
+
+    private fun enqueueResolve(run: Run, info: NsdServiceInfo) {
+        val k = key(info.serviceName, info.serviceType)
+        serviceEpoch.putIfAbsent(k, 0L)
+        val epoch = serviceEpoch[k] ?: 0L
+        synchronized(stateLock) {
+            if (!current(run) || peers.containsKey(k) || resolveQueue.any { it.key == k } || activeResolve?.key == k) return
+            resolveQueue.addLast(ResolveItem(k, info, run.generation, epoch))
+        }
+        resolveNext()
+    }
+    private fun resolveNext() {
+        val item = synchronized(stateLock) { if (activeResolve != null || resolveQueue.isEmpty()) null else resolveQueue.removeFirst().also { activeResolve = it } } ?: return
+        val run = activeRun; if (run == null || run.generation != item.run || !current(run)) { finishResolve(item); return }
+        try { nsdClient.resolve(item.info, object : NsdManager.ResolveListener {
+            override fun onResolveFailed(serviceInfo: NsdServiceInfo?, errorCode: Int) { finishResolve(item); resolveNext() }
+            override fun onServiceResolved(resolved: NsdServiceInfo?) {
+                if (!valid(item)) { finishResolve(item); resolveNext(); return }
+                val host = resolved?.host; val port = resolved?.port ?: -1
+                if (host is Inet4Address && port in 1..65535 && host.hostAddress != null) {
+                    val peer = NearbyPeer(resolved?.serviceName ?: item.info.serviceName ?: "AuraShare", host.hostAddress!!, port, serviceType = type(resolved?.serviceType ?: item.info.serviceType))
+                    peers[item.key] = peer; publish()
+                    scope.launch(Dispatchers.IO) { val friendly = runCatching { client.handshake(PairingClient.Endpoint(peer.host, peer.port)).hostname }.getOrNull(); if (requested && generation.get() == item.run && serviceEpoch[item.key] == item.epoch) { peers.computeIfPresent(item.key) { _, p -> p.copy(deviceName = friendly ?: p.deviceName) }; publish() } }
+                }
+                finishResolve(item); resolveNext()
+            }
+        }) } catch (e: Throwable) { if (valid(item)) { finishResolve(item); if (e is CancellationException) throw e; resolveNext() } }
+    }
+    private fun valid(item: ResolveItem): Boolean = requested && generation.get() == item.run && serviceEpoch[item.key] == item.epoch && synchronized(stateLock) { activeResolve === item }
+    private fun finishResolve(item: ResolveItem) { synchronized(stateLock) { if (activeResolve === item) activeResolve = null } }
 
     fun stopDiscovery() {
-        try {
-            if (isDiscovering) {
-                nsdManager?.stopServiceDiscovery(discoveryListener)
-            }
-        } catch (t: Throwable) {
-            Log.e(tag, "Error stopping discovery", t)
-        } finally {
-            isDiscovering = false
-            releaseMulticastLock()
-        }
+        val oldRun = activeRun; generation.incrementAndGet(); requested = false; discovering = false
+        jobs.values.forEach { it.cancel() }; jobs.clear(); synchronized(stateLock) { resolveQueue.clear(); activeResolve = null }
+        val oldTokens = tokens.entries.toList(); tokens.clear(); oldTokens.forEach { (k, token) -> peers[k]?.let { peer -> scope.launch(Dispatchers.IO) { runCatching { client.disconnect(PairingClient.Endpoint(peer.host, peer.port), token) } } } }
+        if (oldRun != null) runCatching { nsdClient.stop(oldRun) }
+        activeRun = null; releaseLock(); peers.clear(); _state.value = DiscoveryState.Idle
     }
 
-    private var isResolving = false
-
-    private fun resolveService(serviceInfo: NsdServiceInfo) {
-        if (isResolving) return
-        isResolving = true
-        try {
-            nsdManager?.resolveService(serviceInfo, object : NsdManager.ResolveListener {
-                override fun onResolveFailed(serviceInfo: NsdServiceInfo?, errorCode: Int) {
-                    Log.w(tag, "Resolve failed: $errorCode")
-                    isResolving = false
-                }
-
-                override fun onServiceResolved(resolvedInfo: NsdServiceInfo?) {
-                    isResolving = false
-                    val host: InetAddress? = resolvedInfo?.host
-                    val port = resolvedInfo?.port ?: 0
-                    val hostAddress = host?.hostAddress ?: return
-                    val serviceName = resolvedInfo.serviceName ?: "AuraShare Server"
-
-                    if (port <= 0) {
-                        Log.w(tag, "Resolved service with invalid port: $port")
-                        return
-                    }
-
-                    Log.i(tag, "Resolved service: $serviceName at $hostAddress:$port")
-                    _state.value = DiscoveryState.Discovered(serviceName, hostAddress, port)
-                    performHandshake(hostAddress, port, serviceName, activeToken)
-                }
-            })
-        } catch (e: Throwable) {
-            isResolving = false
-            Log.e(tag, "Exception resolving service", e)
-        }
-    }
-
-    fun connectManually(host: String, port: Int, token: String? = null) {
-        activeToken = token
-        _state.value = DiscoveryState.Searching("جاري التحقق من هوية الخادم على $host:$port...")
-        performHandshake(host, port, "AuraShare Desktop", token)
-    }
-
-    fun performHandshake(host: String, port: Int, serviceName: String, token: String? = activeToken) {
-        handshakeJob?.cancel()
-        handshakeJob = scope.launch(Dispatchers.IO) {
-            val handshakeUrl = "http://$host:$port/api/handshake"
-            val healthUrl = "http://$host:$port/health"
-            val pingUrl = "http://$host:$port/ping"
-
-            var verified = false
-            var deviceLabel = serviceName
-            var requiresPairing = false
-            var protocolVersion = 1
-            var failureReason: String? = null
-
-            var shouldAttemptFallback = false
-
-            // Primary attempt: GET /api/handshake
+    fun pair(peer: NearbyPeer, onResult: (Boolean, String?) -> Unit) {
+        val k = key(peer.serviceName, peer.serviceType)
+        // There is one target: cancel pending pairing too, not only already-connected peers.
+        peers.entries.filter { it.key != k && it.value.status == PeerStatus.PAIRING }.forEach { jobs.remove(it.key)?.cancel(); peers[it.key] = it.value.copy(status = PeerStatus.NEARBY) }
+        peers.entries.filter { it.key != k && it.value.status == PeerStatus.CONNECTED }.forEach { disconnect(it.value) }
+        jobs[k]?.cancel(); peers[k] = peer.copy(serviceType = type(peer.serviceType), status = PeerStatus.PAIRING); publish()
+        val ticket = generation.get()
+        jobs[k] = scope.launch(Dispatchers.IO) {
             try {
-                val reqBuilder = Request.Builder()
-                    .url(handshakeUrl)
-                    .header("User-Agent", "AuraShare-Android-Client/1.0")
-                    .get()
-
-                if (!token.isNullOrBlank()) {
-                    reqBuilder.header("X-AuraShare-Token", token)
-                }
-
-                httpClient.newCall(reqBuilder.build()).execute().use { response ->
-                    if (response.isSuccessful) {
-                        val body = response.body?.string().orEmpty()
-                        try {
-                            val json = JSONObject(body)
-                            val server = json.optString("server", "")
-                            if (server.equals("AuraShare", ignoreCase = true)) {
-                                verified = true
-                                deviceLabel = json.optString("hostname", serviceName).ifEmpty { serviceName }
-                                protocolVersion = json.optInt("protocol", 1)
-                                requiresPairing = json.optBoolean("requires_pairing", false)
-                            } else {
-                                failureReason = "الخادم المستجيب ليس خادم AuraShare الرسمي (server='$server')"
-                            }
-                        } catch (e: Exception) {
-                            failureReason = "بيانات المصافحة ليست بتنسيق JSON معتمد من AuraShare"
-                        }
-                    } else if (response.code == 404) {
-                        shouldAttemptFallback = true
-                    } else {
-                        failureReason = "رفض الخادم المصافحة (HTTP ${response.code})"
-                    }
-                }
-            } catch (e: IOException) {
-                Log.w(tag, "Handshake failed on /api/handshake: ${e.message}")
-                failureReason = "تعذر الوصول إلى $handshakeUrl: ${e.localizedMessage ?: "فشل الاتصال"}"
-                shouldAttemptFallback = true
-            }
-
-            // Fallback 1: GET /health if /api/handshake failed with 404
-            if (!verified && shouldAttemptFallback) {
-                try {
-                    val req = Request.Builder()
-                        .url(healthUrl)
-                        .header("User-Agent", "AuraShare-Android-Client/1.0")
-                        .get()
-                        .build()
-                    httpClient.newCall(req).execute().use { response ->
-                        if (response.isSuccessful) {
-                            val body = response.body?.string().orEmpty()
-                            try {
-                                val json = JSONObject(body)
-                                val server = json.optString("server", "")
-                                if (server.equals("AuraShare", ignoreCase = true)) {
-                                    verified = true
-                                    deviceLabel = json.optString("hostname", serviceName).ifEmpty { serviceName }
-                                    protocolVersion = json.optInt("protocol", 1)
-                                    requiresPairing = json.optBoolean("requires_pairing", false)
-                                    failureReason = null
-                                }
-                            } catch (_: Exception) {
-                                // Body may be plain text 'ok' or similar
-                                if (body.contains("AuraShare", ignoreCase = true)) {
-                                    verified = true
-                                    failureReason = null
-                                }
-                            }
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.w(tag, "Health fallback failed: ${e.message}")
-                }
-            }
-
-            // Fallback 2: GET /ping
-            if (!verified && shouldAttemptFallback) {
-                try {
-                    val req = Request.Builder()
-                        .url(pingUrl)
-                        .header("User-Agent", "AuraShare-Android-Client/1.0")
-                        .get()
-                        .build()
-                    httpClient.newCall(req).execute().use { response ->
-                        if (response.isSuccessful) {
-                            val body = response.body?.string().orEmpty()
-                            if (body.contains("AuraShare", ignoreCase = true) || body.equals("pong", ignoreCase = true)) {
-                                verified = true
-                                failureReason = null
-                            }
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.w(tag, "Ping fallback failed: ${e.message}")
-                }
-            }
-
-            if (verified) {
-                Log.i(tag, "Successfully connected and verified AuraShare server at $host:$port ($deviceLabel)")
-                _state.value = DiscoveryState.Connected(
-                    serviceName = serviceName,
-                    host = host,
-                    port = port,
-                    deviceName = deviceLabel,
-                    requiresPairing = requiresPairing,
-                    protocolVersion = protocolVersion
-                )
-            } else {
-                Log.e(tag, "Server at $host:$port failed AuraShare verification: $failureReason")
-                // CRITICAL: NEVER set DiscoveryState.Connected if handshake failed or unverified!
-                _state.value = DiscoveryState.Error(
-                    failureReason ?: "تعذر التحقق من خادم AuraShare على $host:$port (استجابة غير معتمدة أو الخادم متوقف)"
-                )
-            }
+                val endpoint = PairingClient.Endpoint(peer.host, peer.port); val info = client.handshake(endpoint)
+                val request = client.requestPair(endpoint, PairingClient.defaultClientId(context.getSharedPreferences("aurashare_prefs", Context.MODE_PRIVATE)), PairingClient.deviceName())
+                val status = client.awaitApproval(endpoint, request); ensureActive(); if (ticket != generation.get()) return@launch
+                if (status.status == "approved" && !status.token.isNullOrBlank() && status.serverId == info.serverId) {
+                    check(client.heartbeat(endpoint, status.token)) { "heartbeat failed" }; tokens[k] = status.token
+                    peers[k] = peer.copy(deviceName = status.deviceName ?: info.hostname, status = PeerStatus.CONNECTED); publish(); withContext(Dispatchers.Main) { onResult(true, null) }
+                    while (isActive && ticket == generation.get() && client.heartbeat(endpoint, status.token)) delay(10_000)
+                    tokens.remove(k); peers.computeIfPresent(k) { _, p -> p.copy(status = PeerStatus.DISCONNECTED) }; publish()
+                } else { peers[k] = peer.copy(status = PeerStatus.NEARBY); publish(); withContext(Dispatchers.Main) { onResult(false, status.status) } }
+            } catch (e: CancellationException) { throw e }
+            catch (_: Exception) { tokens.remove(k); if (ticket == generation.get()) { peers[k] = peer.copy(status = PeerStatus.NEARBY); publish(); withContext(Dispatchers.Main) { onResult(false, "تعذر الاقتران") } } }
         }
     }
-
-    private fun acquireMulticastLock() {
-        try {
-            if (multicastLock == null) {
-                multicastLock = wifiManager?.createMulticastLock("AuraShareMdnsLock")?.apply {
-                    setReferenceCounted(false)
-                    acquire()
-                }
-            } else if (multicastLock?.isHeld == false) {
-                multicastLock?.acquire()
-            }
-        } catch (t: Throwable) {
-            Log.w(tag, "Failed to acquire multicast lock: ${t.message}")
-        }
-    }
-
-    private fun releaseMulticastLock() {
-        try {
-            multicastLock?.let {
-                if (it.isHeld) {
-                    it.release()
-                }
-            }
-        } catch (t: Throwable) {
-            Log.w(tag, "Failed to release multicast lock: ${t.message}")
-        } finally {
-            multicastLock = null
-        }
-    }
+    fun tokenFor(peer: NearbyPeer) = tokens[key(peer.serviceName, peer.serviceType)]
+    fun disconnect(peer: NearbyPeer) { val k = key(peer.serviceName, peer.serviceType); val token = tokens.remove(k); jobs.remove(k)?.cancel(); peers[k] = peer.copy(status = PeerStatus.NEARBY); publish(); if (token != null) scope.launch(Dispatchers.IO) { runCatching { client.disconnect(PairingClient.Endpoint(peer.host, peer.port), token) } } }
+    fun nearbyPeers(): List<NearbyPeer> = peers.values.toList()
+    private fun acquireLock() { runCatching { if (lock == null) lock = wifi?.createMulticastLock("AuraShareMdns")?.apply { setReferenceCounted(false); acquire() } } }
+    private fun releaseLock() { runCatching { lock?.takeIf { it.isHeld }?.release() }; lock = null }
 }

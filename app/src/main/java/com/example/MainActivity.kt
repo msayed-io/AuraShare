@@ -1,8 +1,6 @@
 package com.example
 
-import android.content.Intent
 import android.os.Bundle
-import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -22,18 +20,6 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        try {
-            val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
-            Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
-                Log.e("AuraShare", "Global exception captured: ${throwable.message}", throwable)
-                defaultHandler?.uncaughtException(thread, throwable)
-            }
-        } catch (t: Throwable) {
-            Log.w("AuraShare", "Could not set uncaught exception handler", t)
-        }
-
-        handleIntent(intent)
-
         enableEdgeToEdge()
         setContent {
             MyApplicationTheme {
@@ -47,15 +33,4 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        setIntent(intent)
-        handleIntent(intent)
-    }
-
-    private fun handleIntent(intent: Intent?) {
-        val dataUri = intent?.data?.toString() ?: return
-        Log.i("AuraShare", "Handling incoming pairing intent URI: $dataUri")
-        viewModel.applyPairingUri(dataUri)
-    }
 }

@@ -33,6 +33,8 @@ class StreamingTransferManager(private val context: Context) {
     private val tag = "StreamingTransfer"
 
     val httpClient = OkHttpClient.Builder()
+        .followRedirects(false)
+        .followSslRedirects(false)
         .connectTimeout(10, TimeUnit.SECONDS)
         .writeTimeout(60, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
@@ -47,7 +49,7 @@ class StreamingTransferManager(private val context: Context) {
 
     companion object {
         /**
-         * Encodes file name for modern /api/v1/upload endpoint:
+         * Encodes file name for the v2 /upload endpoint:
          * Standard RFC 3986 percent-encoding where space is %20 and plus sign is %2B.
          */
         fun encodeModernFileName(name: String): String {
@@ -58,17 +60,6 @@ class StreamingTransferManager(private val context: Context) {
             }
         }
 
-        /**
-         * Encodes file name for legacy /api/upload endpoint:
-         * Form URL encoding where space is + and plus sign is %2B.
-         */
-        fun encodeLegacyFileName(name: String): String {
-            return try {
-                URLEncoder.encode(name, "UTF-8")
-            } catch (_: Exception) {
-                name
-            }
-        }
     }
 
     suspend fun sendFile(
@@ -76,7 +67,7 @@ class StreamingTransferManager(private val context: Context) {
         host: String,
         port: Int,
         token: String? = null,
-        useLegacyEndpoint: Boolean = false,
+        @Suppress("UNUSED_PARAMETER") useLegacyEndpoint: Boolean = false,
         onComplete: (Boolean, String?) -> Unit
     ) = withContext(Dispatchers.IO) {
         val transferId = UUID.randomUUID().toString()
@@ -166,16 +157,13 @@ class StreamingTransferManager(private val context: Context) {
             }
         }
 
-        val endpoint = if (useLegacyEndpoint) "/api/upload" else "/api/v1/upload"
-        val encodedFileName = if (useLegacyEndpoint) {
-            encodeLegacyFileName(item.name)
-        } else {
-            encodeModernFileName(item.name)
-        }
+        val endpoint = "/upload"
+        val encodedFileName = encodeModernFileName(item.name)
 
         val requestBuilder = Request.Builder()
             .url("http://$host:$port$endpoint")
             .header("User-Agent", "AuraShare-Android-Client/1.0")
+            .header("X-Device-Name", encodeModernFileName(PairingClient.deviceName()))
             .header("X-File-Name", encodedFileName)
             .header("X-File-Type", item.mimeType.ifEmpty { "application/octet-stream" })
             .header("X-Transfer-Id", transferId)

@@ -1,0 +1,5 @@
+{
+  "repository": "https://github.com/msayed-io/aurashare-desktop-server",
+  "commit": "da18c352aec282eebf49960c71b808dad5722965",
+  "purpose": "Real Android production networking code against the exact Rust receiving core in secret-free CI. Test harness is not packaged in either application."
+}

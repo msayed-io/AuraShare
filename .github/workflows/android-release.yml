@@ -42,6 +42,13 @@ jobs:
       - name: Install pinned Android SDK packages
         run: sdkmanager 'platforms;android-36.1' 'build-tools;36.0.0'
       # This export has no gradlew JAR/scripts; install the exact declared Gradle instead.
+      - name: Build verified desktop receiving core for real cross-app tests
+        run: |
+          set -euo pipefail
+          (cd integration/desktop-core && sha256sum --check SOURCE_SHA256SUMS)
+          rustup toolchain install 1.90.0 --profile minimal
+          cargo +1.90.0 build --locked --manifest-path integration/desktop-core/Cargo.toml -p aurashare-core --example pairing_ci_server
+          echo "AURASHARE_CORE_TEST_BINARY=$GITHUB_WORKSPACE/integration/desktop-core/target/debug/examples/pairing_ci_server" >> "$GITHUB_ENV"
       - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
         with:
           gradle-version: '9.3.1'
@@ -57,6 +64,8 @@ jobs:
             -dname 'CN=Android Debug,O=Android,C=US'
       - name: Unit/integration tests, Android lint and debug APK
         run: gradle --no-daemon --stacktrace testDebugUnitTest lintDebug assembleDebug
+      - name: Require real cross-application tests without skips
+        run: python3 .github/scripts/verify_cross_app_tests.py
       - name: Upload validation reports
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -204,7 +213,7 @@ jobs:
           }.items():
               assert m[key] == value, f'Metadata mismatch: {key}'
           PY
-          printf 'Signed, installable Android APK.\n\nVersion: %s (code %s)\nCommit: %s\nBuild and tests: https://github.com/%s/actions/runs/%s\n\nRequires Android 7.0/API 24 or newer. SHA256SUMS and release.json document integrity and the signing certificate.\n' \
+          printf 'Signed, installable Android APK.\n\nVersion: %s (code %s)\nCommit: %s\nBuild and tests: https://github.com/%s/actions/runs/%s\n\nNearby pairing v2: automatic desktop discovery, tap Pair, then approve on the desktop. No manual address, link or pairing-code dialogs. Install the matching nearby-v2 Windows release as well. Heartbeats track connection state; either side can disconnect. Discovery names are self-reported, not verified identities. Local HTTP traffic is not encrypted: use a private trusted LAN only.\n\nValidation runs the Android production networking code against a source-pinned real Rust receiving core, alongside unit tests and lint. Physical Wi-Fi/router discovery still depends on multicast and firewall configuration.\n\nRequires Android 7.0/API 24 or newer. SHA256SUMS and release.json document integrity and the signing certificate.\n' \
             "$VERSION" "$VERSION_CODE" "$GITHUB_SHA" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" > "$RUNNER_TEMP/release-notes.md"
           if gh release view "$RELEASE_TAG" --json isDraft >/dev/null 2>&1; then
             # A successful rerun is idempotent: never overwrite already-published binaries.

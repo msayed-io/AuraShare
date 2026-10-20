@@ -23,3 +23,4 @@ keystore.properties
 *.pfx
 /dist/
 __pycache__/
+/integration/desktop-core/target/
