@@ -1,0 +1,6 @@
+{
+  "name": "AuraShare",
+  "description": "تطبيق مشاركة ملفات محلي فخم وفائق السرعة متصل بالحاسوب عبر تقنية mDNS وفيزياء السوائل",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
