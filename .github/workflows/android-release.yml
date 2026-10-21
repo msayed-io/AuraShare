@@ -65,7 +65,9 @@ jobs:
       - name: Unit/integration tests, Android lint and debug APK
         run: gradle --no-daemon --stacktrace testDebugUnitTest lintDebug assembleDebug
       - name: Require real cross-application tests without skips
-        run: python3 .github/scripts/verify_cross_app_tests.py
+        run: |
+          python3 .github/scripts/verify_cross_app_tests.py
+          python3 .github/scripts/verify_android_unit_tests.py
       - name: Upload validation reports
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -81,10 +83,20 @@ jobs:
         run: rm -f "$DEBUG_KEYSTORE_PATH"
 
   device-media:
-    name: Real MP4 cover and opaque capsules on Android 14
+    name: Android 14 device check — ${{ matrix.suite }}
     needs: validate
     runs-on: ubuntu-24.04
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: video-cover
+            test_class: com.example.RealVideoThumbnailTest
+            expected_tests: 1
+          - suite: solid-capsules
+            test_class: com.example.SolidCapsuleSurfaceTest
+            expected_tests: 2
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -120,11 +132,14 @@ jobs:
           echo "DEBUG_KEYSTORE_PATH=$RUNNER_TEMP/debug.keystore" >> "$GITHUB_ENV"
           umask 077
           keytool -genkeypair -noprompt -keystore "$RUNNER_TEMP/debug.keystore" -storepass android -keypass android -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -dname 'CN=Android Debug,O=Android,C=US'
-      - name: Verify real video covers and solid capsule pixels
+      - name: Run bounded native device check
+        env:
+          EXPECTED_DEVICE_TESTS: ${{ matrix.expected_tests }}
         run: |
-          gradle --no-daemon --stacktrace connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.example.RealVideoThumbnailTest,com.example.SolidCapsuleSurfaceTest
+          timeout --signal=TERM --kill-after=20s 8m gradle --no-daemon --stacktrace connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=${{ matrix.test_class }} -Pandroid.testInstrumentationRunnerArguments.timeout_msec=60000
           python3 - <<'PY'
           from pathlib import Path
+          import os
           import xml.etree.ElementTree as ET
           reports = list(Path('app/build/outputs/androidTest-results/connected').rglob('TEST-*.xml'))
           assert reports, 'Device test report missing'
@@ -134,14 +149,14 @@ jobs:
               for key in ('failures', 'errors', 'skipped'):
                   assert int(suite.get(key, '0')) == 0, (report, key)
               tests += int(suite.get('tests', '0'))
-          assert tests >= 3, 'Video decode and capsule opacity tests must all run'
-          print(f'PASS: {tests} real Android video/capsule tests')
+          assert tests == int(os.environ['EXPECTED_DEVICE_TESTS']), 'All selected native device tests must execute'
+          print(f'PASS: {tests} real Android device test(s)')
           PY
       - name: Upload actual device test evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: android-device-media-${{ github.run_id }}-${{ github.run_attempt }}
+          name: android-device-${{ matrix.suite }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             app/build/reports/androidTests/
             app/build/outputs/androidTest-results/
