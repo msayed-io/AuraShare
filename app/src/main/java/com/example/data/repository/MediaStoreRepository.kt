@@ -74,12 +74,7 @@ class MediaStoreRepository(private val context: Context) {
             Log.e(tag, "Error loading images from MediaStore", t)
         }
 
-        val distinctItems = items.distinctBy { it.id }.toMutableList()
-        // If local device has 0 media (e.g. freshly booted emulator), provide pristine initial local items
-        if (distinctItems.isEmpty()) {
-            distinctItems.addAll(getInitialImages())
-        }
-        distinctItems
+        items.distinctBy { it.id }
     }
 
     suspend fun loadVideos(): List<MediaItem> = withContext(Dispatchers.IO) {
@@ -146,11 +141,7 @@ class MediaStoreRepository(private val context: Context) {
             Log.e(tag, "Error loading videos from MediaStore", t)
         }
 
-        val distinctItems = items.distinctBy { it.id }.toMutableList()
-        if (distinctItems.isEmpty()) {
-            distinctItems.addAll(getInitialVideos())
-        }
-        distinctItems
+        items.distinctBy { it.id }
     }
 
     suspend fun loadFiles(): List<MediaItem> = withContext(Dispatchers.IO) {
@@ -160,7 +151,10 @@ class MediaStoreRepository(private val context: Context) {
             MediaStore.Files.FileColumns.DISPLAY_NAME,
             MediaStore.Files.FileColumns.SIZE,
             MediaStore.Files.FileColumns.MIME_TYPE,
-            MediaStore.Files.FileColumns.DATE_MODIFIED
+            MediaStore.Files.FileColumns.DATE_MODIFIED,
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+                MediaStore.Files.FileColumns.RELATIVE_PATH
+            else MediaStore.Files.FileColumns.DISPLAY_NAME
         )
         val selection = "${MediaStore.Files.FileColumns.MEDIA_TYPE} = ${MediaStore.Files.FileColumns.MEDIA_TYPE_NONE}"
         val sortOrder = "${MediaStore.Files.FileColumns.DATE_MODIFIED} DESC"
@@ -178,6 +172,8 @@ class MediaStoreRepository(private val context: Context) {
                 val sizeCol = cursor.getColumnIndex(MediaStore.Files.FileColumns.SIZE)
                 val mimeCol = cursor.getColumnIndex(MediaStore.Files.FileColumns.MIME_TYPE)
                 val dateCol = cursor.getColumnIndex(MediaStore.Files.FileColumns.DATE_MODIFIED)
+                val relativePathCol = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+                    cursor.getColumnIndex(MediaStore.Files.FileColumns.RELATIVE_PATH) else -1
 
                 if (idCol >= 0) {
                     var count = 0
@@ -188,6 +184,9 @@ class MediaStoreRepository(private val context: Context) {
                         val size = if (sizeCol >= 0 && !cursor.isNull(sizeCol)) cursor.getLong(sizeCol) else 0L
                         val mime = if (mimeCol >= 0 && !cursor.isNull(mimeCol)) cursor.getString(mimeCol) else "application/octet-stream"
                         val date = if (dateCol >= 0 && !cursor.isNull(dateCol)) cursor.getLong(dateCol) else 0L
+                        val bucket = if (relativePathCol >= 0 && !cursor.isNull(relativePathCol))
+                            cursor.getString(relativePathCol).trimEnd('/').substringAfterLast('/').ifBlank { "التخزين المشترك" }
+                        else "التخزين المشترك"
                         val contentUri = ContentUris.withAppendedId(MediaStore.Files.getContentUri("external"), id)
 
                         items.add(
@@ -198,7 +197,7 @@ class MediaStoreRepository(private val context: Context) {
                                 sizeBytes = size,
                                 mimeType = mime,
                                 dateModified = date,
-                                bucketName = "المستندات",
+                                bucketName = bucket,
                                 mediaType = AuraMediaType.FILE
                             )
                         )
@@ -209,169 +208,7 @@ class MediaStoreRepository(private val context: Context) {
             Log.e(tag, "Error loading files from MediaStore", t)
         }
 
-        val distinctItems = items.distinctBy { it.id }.toMutableList()
-        if (distinctItems.isEmpty()) {
-            distinctItems.addAll(getInitialFiles())
-        }
-        distinctItems
+        items.distinctBy { it.id }
     }
 
-    private fun getInitialImages(): List<MediaItem> = listOf(
-        MediaItem(
-            id = 101,
-            uri = Uri.parse("android.resource://${context.packageName}/drawable/aurashare_icon_1792527142052"),
-            name = "Aura_Architectural_Plan.jpg",
-            sizeBytes = 4_850_000,
-            mimeType = "image/jpeg",
-            dateModified = System.currentTimeMillis() / 1000,
-            bucketName = "الكاميرا",
-            mediaType = AuraMediaType.IMAGE
-        ),
-        MediaItem(
-            id = 102,
-            uri = Uri.parse("android.resource://${context.packageName}/drawable/aurashare_icon_1792527142052"),
-            name = "Deep_Space_Obsidian.png",
-            sizeBytes = 8_320_000,
-            mimeType = "image/png",
-            dateModified = System.currentTimeMillis() / 1000 - 3600,
-            bucketName = "التنزيلات",
-            mediaType = AuraMediaType.IMAGE
-        ),
-        MediaItem(
-            id = 103,
-            uri = Uri.parse("android.resource://${context.packageName}/drawable/aurashare_icon_1792527142052"),
-            name = "Liquid_Mercury_Drop.jpg",
-            sizeBytes = 12_450_000,
-            mimeType = "image/jpeg",
-            dateModified = System.currentTimeMillis() / 1000 - 7200,
-            bucketName = "الكاميرا",
-            mediaType = AuraMediaType.IMAGE
-        ),
-        MediaItem(
-            id = 104,
-            uri = Uri.parse("android.resource://${context.packageName}/drawable/aurashare_icon_1792527142052"),
-            name = "Monochrome_Engine_Schematic.jpg",
-            sizeBytes = 6_180_000,
-            mimeType = "image/jpeg",
-            dateModified = System.currentTimeMillis() / 1000 - 14400,
-            bucketName = "لقطات الشاشة",
-            mediaType = AuraMediaType.IMAGE
-        ),
-        MediaItem(
-            id = 105,
-            uri = Uri.parse("android.resource://${context.packageName}/drawable/aurashare_icon_1792527142052"),
-            name = "Minimalist_Dashboard_Dark.png",
-            sizeBytes = 3_920_000,
-            mimeType = "image/png",
-            dateModified = System.currentTimeMillis() / 1000 - 28800,
-            bucketName = "لقطات الشاشة",
-            mediaType = AuraMediaType.IMAGE
-        ),
-        MediaItem(
-            id = 106,
-            uri = Uri.parse("android.resource://${context.packageName}/drawable/aurashare_icon_1792527142052"),
-            name = "Satellite_Telemetry_Capture.jpg",
-            sizeBytes = 15_600_000,
-            mimeType = "image/jpeg",
-            dateModified = System.currentTimeMillis() / 1000 - 86400,
-            bucketName = "الكاميرا",
-            mediaType = AuraMediaType.IMAGE
-        )
-    )
-
-    private fun getInitialVideos(): List<MediaItem> = listOf(
-        MediaItem(
-            id = 201,
-            uri = Uri.parse("android.resource://${context.packageName}/drawable/aurashare_icon_1792527142052"),
-            name = "Fluid_Metaballs_Physics_4K.mp4",
-            sizeBytes = 142_500_000,
-            mimeType = "video/mp4",
-            dateModified = System.currentTimeMillis() / 1000,
-            durationMs = 184_000,
-            bucketName = "الكاميرا",
-            mediaType = AuraMediaType.VIDEO
-        ),
-        MediaItem(
-            id = 202,
-            uri = Uri.parse("android.resource://${context.packageName}/drawable/aurashare_icon_1792527142052"),
-            name = "High_Speed_Beam_Stream.mov",
-            sizeBytes = 88_200_000,
-            mimeType = "video/quicktime",
-            dateModified = System.currentTimeMillis() / 1000 - 5400,
-            durationMs = 96_000,
-            bucketName = "التنزيلات",
-            mediaType = AuraMediaType.VIDEO
-        ),
-        MediaItem(
-            id = 203,
-            uri = Uri.parse("android.resource://${context.packageName}/drawable/aurashare_icon_1792527142052"),
-            name = "Quantum_Oscillation_Simulation.mp4",
-            sizeBytes = 320_000_000,
-            mimeType = "video/mp4",
-            dateModified = System.currentTimeMillis() / 1000 - 18000,
-            durationMs = 412_000,
-            bucketName = "الكاميرا",
-            mediaType = AuraMediaType.VIDEO
-        )
-    )
-
-    private fun getInitialFiles(): List<MediaItem> {
-        val sampleDir = java.io.File(context.filesDir, "sample_media").apply { if (!exists()) mkdirs() }
-        
-        fun createRealSampleFile(name: String, content: String): Pair<Uri, Long> {
-            val file = java.io.File(sampleDir, name)
-            if (!file.exists()) {
-                file.writeText(content, Charsets.UTF_8)
-            }
-            return Pair(Uri.fromFile(file), file.length())
-        }
-
-        val file1 = createRealSampleFile("AuraShare_Network_Protocol_v2.pdf", "%PDF-1.4\n1 0 obj\n<< /Title (AuraShare Protocol) >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF")
-        val file2 = createRealSampleFile("Core_Engine_Source_Release.zip", "PK\u0003\u0004AuraShareCoreReleaseArchiveData")
-        val file3 = createRealSampleFile("Desktop_Handshake_Token.key", "AURASHARE-TOKEN-LOCAL-TEST-PAIRING-KEY-2026")
-        val file4 = createRealSampleFile("Server_Configuration_Production.json", "{\"service\":\"AuraShare\",\"mode\":\"production\",\"port\":54321}")
-
-        return listOf(
-            MediaItem(
-                id = 301,
-                uri = file1.first,
-                name = "AuraShare_Network_Protocol_v2.pdf",
-                sizeBytes = file1.second,
-                mimeType = "application/pdf",
-                dateModified = System.currentTimeMillis() / 1000,
-                bucketName = "المستندات",
-                mediaType = AuraMediaType.FILE
-            ),
-            MediaItem(
-                id = 302,
-                uri = file2.first,
-                name = "Core_Engine_Source_Release.zip",
-                sizeBytes = file2.second,
-                mimeType = "application/zip",
-                dateModified = System.currentTimeMillis() / 1000 - 8000,
-                bucketName = "التنزيلات",
-                mediaType = AuraMediaType.FILE
-            ),
-            MediaItem(
-                id = 303,
-                uri = file3.first,
-                name = "Desktop_Handshake_Token.key",
-                sizeBytes = file3.second,
-                mimeType = "text/plain",
-                dateModified = System.currentTimeMillis() / 1000 - 24000,
-                bucketName = "المستندات",
-                mediaType = AuraMediaType.FILE
-            ),
-            MediaItem(
-                id = 304,
-                uri = file4.first,
-                name = "Server_Configuration_Production.json",
-                sizeBytes = file4.second,
-                mimeType = "application/json",
-                dateModified = System.currentTimeMillis() / 1000 - 45000,
-                bucketName = "التنزيلات",
-                mediaType = AuraMediaType.FILE
-            )
-        )
-    }
 }

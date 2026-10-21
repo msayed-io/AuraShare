@@ -63,6 +63,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import coil.decode.VideoFrameDecoder
 import coil.request.ImageRequest
 import com.example.data.model.AuraMediaType
 import com.example.data.model.MediaItem
@@ -278,6 +279,7 @@ private fun VideoGridItem(
             AsyncImage(
                 model = ImageRequest.Builder(LocalContext.current)
                     .data(item.uri)
+                    .decoderFactory(VideoFrameDecoder.Factory())
                     .crossfade(true)
                     .build(),
                 contentDescription = item.name,
