@@ -24,7 +24,7 @@ private fun runPermissionCheck(
 ) {
     val application = ApplicationProvider.getApplicationContext<Application>()
     val shadow = shadowOf(application)
-    shadow.revokePermissions(*permissions)
+    shadow.denyPermissions(*permissions)
     if (granted.isNotEmpty()) shadow.grantPermissions(*granted)
 
     val dispatcher = StandardTestDispatcher()
@@ -40,7 +40,7 @@ private fun runPermissionCheck(
         viewModel.discoveryManager.stopDiscovery()
         store.clear()
         Dispatchers.resetMain()
-        shadow.revokePermissions(*permissions)
+        shadow.denyPermissions(*permissions)
     }
 }
 

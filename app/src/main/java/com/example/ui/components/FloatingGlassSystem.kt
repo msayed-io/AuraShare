@@ -203,7 +203,7 @@ fun FloatingBottomNavigation(selectedTab: String, onSelectTab: (String) -> Unit,
             if (selected != null) Box(Modifier.align(AbsoluteAlignment.TopLeft).absoluteOffset(x = x).width(width).height(36.dp)
                 .clip(RoundedCornerShape(18.dp))
                 .background(if (dark) Color(0xFF2C2C2E) else Color(0xFFA7AA63))
-                .border(.5.dp, if (dark) Color.White.copy(alpha = .12f) else Color(0xFF7E813F), RoundedCornerShape(18.dp)))
+                .border(.5.dp, if (dark) Color.White.copy(alpha = .12f) else Color(0xFFA7AA63).copy(alpha = .35f), RoundedCornerShape(18.dp)))
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                 NavEntries.forEach { item ->
                     val active = item.key == selectedTab
