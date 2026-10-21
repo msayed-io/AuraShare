@@ -42,6 +42,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         enforceImmersiveStatusBar(window)
+        viewModel.onHostResumed()
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {

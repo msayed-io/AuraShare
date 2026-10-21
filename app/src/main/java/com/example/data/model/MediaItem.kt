@@ -18,8 +18,11 @@ data class MediaItem(
     val dateModified: Long,
     val durationMs: Long? = null,
     val bucketName: String = "الكل",
-    val mediaType: AuraMediaType
+    val mediaType: AuraMediaType,
+    val directoryPath: String? = null
 ) {
+    val isDirectory: Boolean
+        get() = mimeType == "vnd.android.document/directory"
     val formattedSize: String
         get() {
             if (sizeBytes <= 0) return "0 بايت"

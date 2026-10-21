@@ -80,9 +80,83 @@ jobs:
         if: always()
         run: rm -f "$DEBUG_KEYSTORE_PATH"
 
+  device-media:
+    name: Real MP4 cover on Android 14
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
+        with:
+          gradle-version: '9.3.1'
+          cache-read-only: true
+      - name: Install SDK and Android 14 emulator
+        run: |
+          sdkmanager 'platforms;android-36.1' 'build-tools;36.0.0' 'emulator' 'system-images;android-34;google_apis;x86_64'
+          sudo chmod 666 /dev/kvm
+          echo no | avdmanager create avd --name aurashare-test --package 'system-images;android-34;google_apis;x86_64' --force
+          "$ANDROID_HOME/emulator/emulator" -avd aurashare-test -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader_indirect -cores 2 -memory 2048 > "$RUNNER_TEMP/emulator.log" 2>&1 &
+          timeout 240 adb wait-for-device
+          booted=false
+          for _ in $(seq 1 90); do
+            if [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ]; then booted=true; break; fi
+            sleep 3
+          done
+          test "$booted" = true
+          adb shell input keyevent 82
+      - name: Create disposable test identity
+        run: |
+          echo "DEBUG_KEYSTORE_PATH=$RUNNER_TEMP/debug.keystore" >> "$GITHUB_ENV"
+          umask 077
+          keytool -genkeypair -noprompt -keystore "$RUNNER_TEMP/debug.keystore" -storepass android -keypass android -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 -dname 'CN=Android Debug,O=Android,C=US'
+      - name: Decode real MediaStore video using the production cover request
+        run: |
+          gradle --no-daemon --stacktrace connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.example.RealVideoThumbnailTest
+          python3 - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+          reports = list(Path('app/build/outputs/androidTest-results/connected').rglob('TEST-*.xml'))
+          assert reports, 'Device test report missing'
+          tests = 0
+          for report in reports:
+              suite = ET.parse(report).getroot()
+              for key in ('failures', 'errors', 'skipped'):
+                  assert int(suite.get(key, '0')) == 0, (report, key)
+              tests += int(suite.get('tests', '0'))
+          assert tests > 0, 'No native video decoding tests ran'
+          print(f'PASS: {tests} real Android video decoding test(s)')
+          PY
+      - name: Upload actual device test evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: android-device-media-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            app/build/reports/androidTests/
+            app/build/outputs/androidTest-results/
+            ${{ runner.temp }}/emulator.log
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Stop emulator and remove disposable identity
+        if: always()
+        run: |
+          adb emu kill || true
+          rm -f "$RUNNER_TEMP/debug.keystore"
+
   signed-apk:
     name: Version and sign installable APK
-    needs: validate
+    needs: [validate, device-media]
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-24.04
     timeout-minutes: 30

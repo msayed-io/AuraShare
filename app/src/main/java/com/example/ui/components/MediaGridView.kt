@@ -2,6 +2,7 @@ package com.example.ui.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -28,6 +29,7 @@ import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.FolderZip
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Send
@@ -63,7 +65,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
-import coil.decode.VideoFrameDecoder
 import coil.request.ImageRequest
 import com.example.data.model.AuraMediaType
 import com.example.data.model.MediaItem
@@ -74,6 +75,7 @@ fun MediaGridView(
     items: List<MediaItem>,
     dragController: FluidDragController,
     onQuickSend: (MediaItem) -> Unit,
+    onOpenFolder: (MediaItem) -> Unit = {},
     modifier: Modifier = Modifier,
     contentPadding: PaddingValues = PaddingValues(start = 12.dp, end = 12.dp, top = 80.dp, bottom = 96.dp),
     header: @Composable () -> Unit = {}
@@ -170,7 +172,8 @@ fun MediaGridView(
                     FileListRowItem(
                         item = item,
                         dragController = dragController,
-                        onQuickSend = onQuickSend
+                        onQuickSend = onQuickSend,
+                        onOpenFolder = onOpenFolder
                     )
                 }
             }
@@ -277,11 +280,7 @@ private fun VideoGridItem(
                 .alpha(if (isBeingDragged) 0.25f else 1f)
         ) {
             AsyncImage(
-                model = ImageRequest.Builder(LocalContext.current)
-                    .data(item.uri)
-                    .decoderFactory(VideoFrameDecoder.Factory())
-                    .crossfade(true)
-                    .build(),
+                model = videoThumbnailRequest(LocalContext.current, item.uri),
                 contentDescription = item.name,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()
@@ -345,12 +344,14 @@ private fun VideoGridItem(
 private fun FileListRowItem(
     item: MediaItem,
     dragController: FluidDragController,
-    onQuickSend: (MediaItem) -> Unit
+    onQuickSend: (MediaItem) -> Unit,
+    onOpenFolder: (MediaItem) -> Unit
 ) {
     var itemRootOffset by remember { mutableStateOf(Offset.Zero) }
     val isBeingDragged = dragController.activeItem?.id == item.id
 
     val icon: ImageVector = when {
+        item.isDirectory -> Icons.Default.FolderOpen
         item.name.endsWith(".pdf", ignoreCase = true) -> Icons.Default.PictureAsPdf
         item.name.endsWith(".zip", ignoreCase = true) || item.name.endsWith(".rar", ignoreCase = true) -> Icons.Default.Archive
         item.name.endsWith(".json", ignoreCase = true) || item.name.endsWith(".kt", ignoreCase = true) -> Icons.Default.Code
@@ -367,11 +368,12 @@ private fun FileListRowItem(
             .onGloballyPositioned { coordinates ->
                 itemRootOffset = coordinates.positionInRoot()
             }
-            .fluidDraggable(
+            .then(if (item.isDirectory) Modifier else Modifier.fluidDraggable(
                 item = item,
                 getItemRootOffset = { itemRootOffset },
                 dragController = dragController
-            )
+            ))
+            .clickable(enabled = item.isDirectory) { onOpenFolder(item) }
             .testTag("file_item_${item.id}")
     ) {
         Row(
@@ -417,21 +419,23 @@ private fun FileListRowItem(
                 )
             }
 
-            // Icon-only send affordance
-            IconButton(
-                onClick = { onQuickSend(item) },
-                modifier = Modifier
-                    .size(36.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Send,
-                    contentDescription = "إرسال الملف للحاسوب",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(16.dp)
-                )
+            if (!item.isDirectory) {
+                // Directories are navigation targets, never files to send.
+                IconButton(
+                    onClick = { onQuickSend(item) },
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Send,
+                        contentDescription = "إرسال الملف للحاسوب",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
             }
         }
     }

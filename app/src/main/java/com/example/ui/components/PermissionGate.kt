@@ -1,6 +1,7 @@
 package com.example.ui.components
 
 import android.Manifest
+import android.content.Intent
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -37,6 +38,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -52,16 +54,16 @@ import com.example.ui.theme.SilverSecondary
 fun PermissionGate(
     isMediaPermissionGranted: Boolean,
     onPermissionsUpdated: () -> Unit,
-    content: @Composable () -> Unit
+    onPickFolder: () -> Unit,
+    onPickerError: (String) -> Unit = {},
+    content: @Composable (pickFolder: () -> Unit) -> Unit
 ) {
     var hasBypassedPermission by remember { mutableStateOf(false) }
+    val context = LocalContext.current
 
-    if (isMediaPermissionGranted || hasBypassedPermission) {
-        content()
-        return
-    }
-
-    val mediaPermissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+    val mediaPermissions = if (Build.VERSION.SDK_INT >= 34) {
+        arrayOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VIDEO, Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)
+    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         arrayOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VIDEO)
     } else {
         arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
@@ -72,6 +74,30 @@ fun PermissionGate(
     ) {
         onPermissionsUpdated()
         hasBypassedPermission = true
+    }
+    val folderPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri != null) {
+            runCatching {
+                // OpenDocumentTree grants persistability; takePersistableUriPermission accepts READ only.
+                context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }.onSuccess {
+                hasBypassedPermission = true
+                onPickFolder()
+                onPermissionsUpdated()
+            }.onFailure { error ->
+                onPickerError("تعذر حفظ صلاحية المجلد: ${error.message ?: "رفض مزود الملفات الطلب"}")
+            }
+        }
+    }
+
+    val pickFolder: () -> Unit = { folderPickerLauncher.launch(null) }
+
+    val hasFolderAccess = context.contentResolver.persistedUriPermissions.any { it.isReadPermission }
+    if (isMediaPermissionGranted || hasBypassedPermission || hasFolderAccess) {
+        content(pickFolder)
+        return
     }
 
     Box(
@@ -139,7 +165,7 @@ fun PermissionGate(
                     horizontalArrangement = Arrangement.spacedBy(16.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Secondary: Explore / sample media
+                    // Continue to accessible files without granting photo/video access.
                     IconButton(
                         onClick = { hasBypassedPermission = true },
                         modifier = Modifier
@@ -151,7 +177,7 @@ fun PermissionGate(
                     ) {
                         Icon(
                             imageVector = Icons.Default.FolderOpen,
-                            contentDescription = "استعراض النماذج",
+                            contentDescription = "استعراض الملفات والمجلدات",
                             tint = SilverSecondary,
                             modifier = Modifier.size(22.dp)
                         )
