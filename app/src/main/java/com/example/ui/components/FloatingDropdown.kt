@@ -25,7 +25,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
@@ -66,7 +65,6 @@ fun FloatingDropdown(
     modifier: Modifier = Modifier,
     minWidth: Dp = 178.dp,
     maxHeight: Dp = 360.dp,
-    alignment: Alignment = Alignment.TopStart,
     content: @Composable () -> Unit
 ) {
     val transition = remember { MutableTransitionState(false) }

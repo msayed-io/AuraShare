@@ -52,6 +52,8 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -86,6 +88,8 @@ fun DesktopCapsuleHeader(
     )
     val surface = MaterialTheme.colorScheme.surface
     val onSurface = MaterialTheme.colorScheme.onSurface
+    val transferLabel = if (currentTransfer?.status == TransferStatus.STREAMING)
+        "، جارٍ إرسال ${currentTransfer.item.name}، ${(currentTransfer.progress * 100).toInt()} بالمئة، ${currentTransfer.formattedSpeed}" else ""
     val titleMaxWidth = (LocalConfiguration.current.screenWidthDp.dp - 164.dp).coerceAtLeast(76.dp)
 
     Row(
@@ -99,10 +103,13 @@ fun DesktopCapsuleHeader(
                 modifier = Modifier
                     .widthIn(max = titleMaxWidth)
                     .onGloballyPositioned { onCapsuleBoundsChanged(it.boundsInRoot()) }
-                    .semantics { stateDescription = statusLabel(discoveryState, isConnected) }
+                    .semantics {
+                        stateDescription = statusLabel(discoveryState, isConnected) + transferLabel
+                        liveRegion = LiveRegionMode.Polite
+                    }
                     .testTag("desktop_capsule_status"),
                 height = 44.dp,
-                contentDescription = "$title، ${statusLabel(discoveryState, isConnected)}",
+                contentDescription = "$title، ${statusLabel(discoveryState, isConnected)}$transferLabel",
                 onClick = { statusExpanded = !statusExpanded },
             ) {
                 Row(
@@ -118,7 +125,6 @@ fun DesktopCapsuleHeader(
             FloatingDropdown(
                 expanded = statusExpanded,
                 onDismissRequest = { statusExpanded = false },
-                alignment = Alignment.TopStart,
                 modifier = Modifier.width(300.dp),
             ) {
                 NearbyConnectionDetails(
@@ -140,7 +146,6 @@ fun DesktopCapsuleHeader(
                     FloatingDropdown(
                         expanded = actionsExpanded,
                         onDismissRequest = { actionsExpanded = false },
-                        alignment = Alignment.TopStart,
                         modifier = Modifier.width(188.dp),
                     ) {
                         HeaderMenuItem(Icons.Default.Refresh, "إعادة البحث", onRefreshDiscovery) { actionsExpanded = false }

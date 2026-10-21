@@ -49,7 +49,6 @@ fun AuraShareScreen(viewModel: MainViewModel) {
     val snackbarHostState = remember { SnackbarHostState() }
     val dragController = rememberFluidDragController(onSendItem = viewModel::sendItem)
     val density = LocalDensity.current
-    val topInset = with(density) { WindowInsets.statusBars.getTop(this).toDp() }
     val bottomInset = with(density) { WindowInsets.navigationBars.getBottom(this).toDp() }
 
     LaunchedEffect(uiState.statusNotification) {
@@ -84,7 +83,7 @@ fun AuraShareScreen(viewModel: MainViewModel) {
                             // every card can travel behind both independent floating controls.
                             contentPadding = PaddingValues(
                                 start = 12.dp, end = 12.dp,
-                                top = topInset + 80.dp, bottom = bottomInset + 96.dp
+                                top = 80.dp, bottom = bottomInset + 96.dp
                             ),
                             header = {
                                 Row(
@@ -125,7 +124,7 @@ fun AuraShareScreen(viewModel: MainViewModel) {
                         onOpenHistory = { viewModel.showHistorySheet(true) },
                         onCapsuleBoundsChanged = {},
                         isBeingAttracted = dragController.isAttracted,
-                        modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding()
+                        modifier = Modifier.align(Alignment.TopCenter)
                     )
                     // AuraShare has no create/add action: use a single centered capsule.
                     FloatingBottomNavigation(

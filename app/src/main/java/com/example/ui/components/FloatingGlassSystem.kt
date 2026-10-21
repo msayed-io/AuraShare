@@ -53,6 +53,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.AbsoluteAlignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.BlurredEdgeTreatment
 import androidx.compose.ui.draw.blur
@@ -199,7 +200,7 @@ fun FloatingBottomNavigation(selectedTab: String, onSelectTab: (String) -> Unit,
     val dark = MaterialTheme.colorScheme.background.luminance() < .5f
     FloatingGlassSurface(modifier = modifier, height = 48.dp, shape = RoundedCornerShape(24.dp)) {
         Box(Modifier.padding(6.dp).selectableGroup()) {
-            if (selected != null) Box(Modifier.absoluteOffset(x = x).width(width).height(36.dp)
+            if (selected != null) Box(Modifier.align(AbsoluteAlignment.TopLeft).absoluteOffset(x = x).width(width).height(36.dp)
                 .clip(RoundedCornerShape(18.dp))
                 .background(if (dark) Color(0xFF2C2C2E) else Color(0xFFA7AA63).copy(alpha = .18f))
                 .border(.5.dp, if (dark) Color.White.copy(alpha = .12f) else Color(0xFFA7AA63).copy(alpha = .35f), RoundedCornerShape(18.dp)))

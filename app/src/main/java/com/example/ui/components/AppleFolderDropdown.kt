@@ -77,7 +77,6 @@ fun AppleFolderDropdown(
         FloatingDropdown(
             expanded = expanded,
             onDismissRequest = { expanded = false },
-            alignment = Alignment.TopStart,
             minWidth = 178.dp,
             maxHeight = 360.dp,
         ) {

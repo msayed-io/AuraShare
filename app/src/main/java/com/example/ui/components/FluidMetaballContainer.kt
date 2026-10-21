@@ -1,5 +1,7 @@
 package com.example.ui.components
 
+import android.graphics.Paint
+import android.graphics.Path as NativePath
 import android.os.Build
 import androidx.annotation.RequiresApi
 import androidx.compose.animation.core.Animatable
@@ -44,7 +46,10 @@ import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.RenderEffect as ComposeRenderEffect
 import androidx.compose.ui.graphics.asComposeRenderEffect
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.util.VelocityTracker
@@ -68,6 +73,43 @@ import com.example.ui.theme.PlatinumPrimary
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
+
+internal data class FallbackBridgeGeometry(
+    val anchorX: Float,
+    val anchorY: Float,
+    val cardX: Float,
+    val cardY: Float,
+    val anchorHalfWidth: Float,
+    val cardHalfWidth: Float
+)
+
+/** Bounded arithmetic description of the pre-31 liquid bridge. */
+internal fun fallbackBridgeGeometry(
+    cardCenterX: Float,
+    cardCenterY: Float,
+    cardRadius: Float,
+    maxDistance: Float = 150f,
+    anchorCenterX: Float = cardCenterX
+): FallbackBridgeGeometry? {
+    if (!cardCenterX.isFinite() || !cardCenterY.isFinite() ||
+        !cardRadius.isFinite() || !anchorCenterX.isFinite() || !maxDistance.isFinite() || maxDistance <= 0f || cardRadius <= 0f
+    ) return null
+
+    val dx = cardCenterX - anchorCenterX
+    val dy = cardCenterY.coerceAtLeast(0f)
+    val distance = kotlin.math.sqrt(dx * dx + dy * dy)
+    if (distance >= maxDistance) return null
+
+    val attraction = (1f - distance / maxDistance).coerceIn(0f, 1f)
+    return FallbackBridgeGeometry(
+        anchorX = anchorCenterX,
+        anchorY = 0f,
+        cardX = cardCenterX,
+        cardY = cardCenterY,
+        anchorHalfWidth = cardRadius * (.065f + .35f * attraction),
+        cardHalfWidth = (cardRadius * (0.42f + 0.22f * attraction)).coerceIn(1f, cardRadius)
+    )
+}
 
 @RequiresApi(Build.VERSION_CODES.S)
 private object Api31RenderEffectHelper {
@@ -297,6 +339,8 @@ fun FluidMetaballContainer(
 ) {
     val density = LocalDensity.current
     val activeItem = dragController.activeItem
+    val fallbackPath = remember { NativePath() }
+    val fallbackPaint = remember { Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL } }
 
     // Alpha threshold matrix from reference doc
     val alphaThresholdMatrix = remember {
@@ -320,11 +364,14 @@ fun FluidMetaballContainer(
         // Base main application layout
         content()
 
-        // Full Screen Edge-to-Edge Fluid Liquid Attraction Layer
+        // API31+ keeps the existing full-screen RenderEffect path. Older APIs use only
+        // the bounded native-path bridge below; no full-screen layer is filtered there.
         if (activeItem != null) {
             val swell = dragController.animSwell.value
             val currentX = dragController.posX
             val currentY = if (dragController.isAbsorbed) dragController.animReleaseY.value else dragController.posY
+            val api31OrNewer = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+            val useRenderEffect = api31OrNewer && dragController.isAttracted && morphRenderEffect != null
 
             // CRITICAL: Force LTR for the floating drag overlay to ensure 1:1 physical screen pixel mapping
             CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
@@ -332,19 +379,32 @@ fun FluidMetaballContainer(
                     modifier = Modifier
                         .fillMaxSize()
                         .graphicsLayer {
-                            if (dragController.isAttracted && morphRenderEffect != null) {
+                            if (useRenderEffect) {
                                 renderEffect = morphRenderEffect
                             }
                         }
                 ) {
-                    // Top Edge-to-Edge Fluid Meniscus and Metaball Bridge
-                    Canvas(modifier = Modifier.fillMaxSize()) {
-                        drawEdgeLiquidAttraction(
-                            dropCenter = Offset(currentX, currentY),
-                            dropRadius = with(density) { 44.dp.toPx() } * dragController.animScale.value,
-                            swellFactor = swell,
-                            color = PlatinumPrimary.copy(alpha = 0.95f)
-                        )
+                    if (api31OrNewer) {
+                        // Existing API31+ edge meniscus and RenderEffect behavior.
+                        Canvas(modifier = Modifier.fillMaxSize()) {
+                            drawEdgeLiquidAttraction(
+                                dropCenter = Offset(currentX, currentY),
+                                dropRadius = with(density) { 44.dp.toPx() } * dragController.animScale.value,
+                                swellFactor = swell,
+                                color = PlatinumPrimary.copy(alpha = 0.95f)
+                            )
+                        }
+                    } else {
+                        // API29/30: draw only a local path, never a filtered/full-screen rectangle.
+                        Canvas(modifier = Modifier.fillMaxSize()) {
+                            drawFallbackBridge(
+                                cardCenter = Offset(currentX, currentY),
+                                cardRadius = with(density) { 46.dp.toPx() } * dragController.animScale.value,
+                                maxDistance = with(density) { 150.dp.toPx() },
+                                color = PlatinumPrimary.copy(alpha = 0.95f),
+                                path = fallbackPath, paint = fallbackPaint
+                            )
+                        }
                     }
 
                     // Absolute Floating Draggable Card
@@ -429,6 +489,40 @@ fun FluidMetaballContainer(
             }
         }
     }
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawFallbackBridge(
+    cardCenter: Offset,
+    cardRadius: Float,
+    maxDistance: Float,
+    color: Color,
+    path: NativePath,
+    paint: Paint
+) {
+    val geometry = fallbackBridgeGeometry(cardCenter.x, cardCenter.y, cardRadius, maxDistance, size.width / 2f) ?: return
+    val verticalSpan = (geometry.cardY - geometry.anchorY).coerceAtLeast(1f)
+    val controlY = geometry.anchorY + verticalSpan * 0.48f
+    path.reset()
+    path.apply {
+        moveTo(geometry.anchorX - geometry.anchorHalfWidth, geometry.anchorY)
+        cubicTo(
+            geometry.anchorX - geometry.anchorHalfWidth * 1.15f, controlY * 0.42f,
+            geometry.cardX - geometry.cardHalfWidth * 1.28f, controlY,
+            geometry.cardX - geometry.cardHalfWidth, geometry.cardY
+        )
+        quadTo(
+            geometry.cardX, geometry.cardY + geometry.cardHalfWidth * 0.18f,
+            geometry.cardX + geometry.cardHalfWidth, geometry.cardY
+        )
+        cubicTo(
+            geometry.cardX + geometry.cardHalfWidth * 1.28f, controlY,
+            geometry.anchorX + geometry.anchorHalfWidth * 1.15f, controlY * 0.42f,
+            geometry.anchorX + geometry.anchorHalfWidth, geometry.anchorY
+        )
+        close()
+    }
+    paint.color = color.toArgb()
+    drawIntoCanvas { canvas -> canvas.nativeCanvas.drawPath(path, paint) }
 }
 
 /**

@@ -24,6 +24,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         enableEdgeToEdge()
+        enforceImmersiveStatusBar(window)
         setContent {
             MyApplicationTheme {
                 Surface(
@@ -36,6 +37,16 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        enforceImmersiveStatusBar(window)
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) enforceImmersiveStatusBar(window)
     }
 
 }
