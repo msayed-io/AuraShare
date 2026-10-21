@@ -7,7 +7,13 @@ import coil.ImageLoader
 import coil.request.SuccessResult
 import com.example.ui.components.videoThumbnailRequest
 import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.setMain
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -22,9 +28,13 @@ import org.robolectric.shadows.ShadowMediaMetadataRetriever
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [29])
+@OptIn(ExperimentalCoroutinesApi::class)
 class VideoThumbnailRegressionTest {
-    @Test
+    @Test(timeout = 60_000)
     fun `video frame request uses VideoFrameDecoder and returns shadowed bitmap`() = runBlocking {
+        // Coil returns results through Main.immediate; Robolectric's paused looper
+        // cannot drain that callback while this test is inside runBlocking.
+        Dispatchers.setMain(UnconfinedTestDispatcher())
         val context = ApplicationProvider.getApplicationContext<android.content.Context>()
         val video = File.createTempFile("aura-thumbnail-", ".mp4")
         val loader = ImageLoader(context)
@@ -42,7 +52,7 @@ class VideoThumbnailRegressionTest {
             val request = videoThumbnailRequest(context, Uri.fromFile(video)).newBuilder()
                 .size(2, 3).allowHardware(false)
                 .build()
-            val result = loader.execute(request)
+            val result = withTimeout(30_000) { loader.execute(request) }
 
             assertTrue("VideoFrameDecoder should produce a successful result", result is SuccessResult)
             val bitmap = (result as SuccessResult).drawable
@@ -55,6 +65,7 @@ class VideoThumbnailRegressionTest {
             expected.recycle()
             video.delete()
             ShadowMediaMetadataRetriever.reset()
+            Dispatchers.resetMain()
         }
     }
 }

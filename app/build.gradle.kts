@@ -144,3 +144,11 @@ dependencies {
   "ksp"(libs.androidx.room.compiler)
   "ksp"(libs.moshi.kotlin.codegen)
 }
+
+tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+  timeout.set(java.time.Duration.ofMinutes(10))
+  testLogging {
+    events("passed", "skipped", "failed")
+    exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+  }
+}
