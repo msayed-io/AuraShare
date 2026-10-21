@@ -42,6 +42,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
@@ -138,7 +140,12 @@ fun DesktopCapsuleHeader(
 
         // In RTL this group is the physical left edge: a single 44dp controls capsule.
         FloatingGlassSurface(height = 44.dp, shape = HeaderCapsuleShape, modifier = Modifier.testTag("desktop_capsule_controls")) {
-            Row(modifier = Modifier.padding(horizontal = 4.dp), horizontalArrangement = Arrangement.spacedBy(0.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(modifier = Modifier.padding(horizontal = 4.dp).drawBehind {
+                val separator = Color.White.copy(alpha = .1f)
+                listOf(1f / 3f, 2f / 3f).forEach { fraction ->
+                    drawLine(separator, Offset(size.width * fraction, size.height * .3f), Offset(size.width * fraction, size.height * .7f), .5.dp.toPx())
+                }
+            }, horizontalArrangement = Arrangement.spacedBy(0.dp), verticalAlignment = Alignment.CenterVertically) {
                 HeaderIconButton("refresh_discovery_button", "إعادة البحث عن الخادم", Icons.Default.Refresh, onRefreshDiscovery)
                 HeaderIconButton("transfer_history_button", "سجل عمليات النقل", Icons.Default.History, onOpenHistory)
                 Box {
@@ -167,7 +174,7 @@ private fun HeaderIconButton(tag: String, description: String, icon: androidx.co
 @Composable
 private fun HeaderMenuItem(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, onClick: () -> Unit, close: () -> Unit) {
     Row(
-        modifier = Modifier.fillMaxWidth().height(44.dp).clip(RoundedCornerShape(16.dp)).clickable { onClick(); close() }.padding(horizontal = 12.dp),
+        modifier = Modifier.fillMaxWidth().height(44.dp).clip(RoundedCornerShape(16.dp)).floatingMenuInteraction { onClick(); close() }.padding(horizontal = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {

@@ -22,6 +22,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
@@ -64,7 +65,7 @@ fun AuraShareScreen(viewModel: MainViewModel) {
     ) {
         FluidMetaballContainer(dragController = dragController) {
             FloatingBackdropHost(
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.fillMaxSize().blur(if (uiState.showHistorySheet) 4.dp else 0.dp),
                 content = {
                     val rawItems = when (uiState.selectedTab) {
                         AuraMediaType.IMAGE -> uiState.images

@@ -1,4 +1,8 @@
 package com.example.ui.components
+import android.os.Build
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
+import androidx.compose.foundation.hoverable
+import com.example.ui.theme.AuraDarkTokens
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
@@ -141,8 +145,8 @@ fun FloatingGlassSurface(
         scale.animateTo(if (pressed) .96f else 1f, tween(if (pressed) 80 else 240, easing = PressEasing))
     }
     val dark = MaterialTheme.colorScheme.background.luminance() < .5f
-    val tint = if (dark) Color(0xFF1C1C1E) else Color(0xFFF4F1E4)
-    val border = if (dark) Color.White.copy(alpha = .08f) else Color(0xFF121A1B).copy(alpha = .12f)
+    val tint = if (dark) AuraDarkTokens.Surface else Color(0xFFF4F1E4)
+    val border = if (dark) AuraDarkTokens.Border else Color(0xFF121A1B).copy(alpha = .12f)
     Box(
         modifier.height(height).graphicsLayer { scaleX = scale.value; scaleY = scale.value }
             .shadow(12.dp, shape, clip = false, ambientColor = Color.Black.copy(alpha = .4f), spotColor = Color.Black.copy(alpha = .4f))
@@ -153,7 +157,7 @@ fun FloatingGlassSurface(
         contentAlignment = Alignment.Center
     ) {
         BackdropLens(Modifier.matchParentSize(), 24.dp)
-        Box(Modifier.matchParentSize().background(tint).border(BorderStroke(.5.dp, border), shape))
+        Box(Modifier.matchParentSize().background(if (Build.VERSION.SDK_INT >= 31) tint.copy(alpha = .94f) else tint).border(BorderStroke(.5.dp, border), shape))
         content()
     }
 }
@@ -209,6 +213,7 @@ fun FloatingBottomNavigation(selectedTab: String, onSelectTab: (String) -> Unit,
                     val active = item.key == selectedTab
                     val interaction = remember { MutableInteractionSource() }
                     val pressed by interaction.collectIsPressedAsState()
+                    val hovered by interaction.collectIsHoveredAsState()
                     val scale = remember { Animatable(1f) }
                     LaunchedEffect(pressed) { scale.animateTo(if (pressed) .96f else 1f, tween(if (pressed) 80 else 240, easing = PressEasing)) }
                     Row(Modifier.height(36.dp)
@@ -216,11 +221,13 @@ fun FloatingBottomNavigation(selectedTab: String, onSelectTab: (String) -> Unit,
                         .onGloballyPositioned { positions[item.key] = it.positionInParent().x to it.size.width.toFloat() }
                         .graphicsLayer { scaleX = scale.value; scaleY = scale.value; alpha = if (active) 1f else .6f }
                         .clip(RoundedCornerShape(18.dp))
+                        .background(if (hovered) Color.White.copy(alpha = .05f) else Color.Transparent)
+                        .hoverable(interaction)
                         .selectable(selected = active, interactionSource = interaction, indication = null, role = Role.Tab, onClick = { onSelectTab(item.key) })
                         .semantics { contentDescription = item.label }
                         .testTag(item.tag).padding(horizontal = if (active) 16.dp else 14.dp),
                         horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-                        Icon(item.icon, null, tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(16.dp))
+                        Icon(item.icon, null, tint = if (active) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(16.dp))
                         AnimatedVisibility(visible = active,
                             enter = fadeIn(tween(240)) + expandHorizontally(tween(240)),
                             exit = fadeOut(tween(120)) + shrinkHorizontally(tween(240))) {

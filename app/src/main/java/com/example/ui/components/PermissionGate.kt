@@ -27,6 +27,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -41,12 +42,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.ui.theme.MatteBorder
-import com.example.ui.theme.MatteBorderSubtle
-import com.example.ui.theme.MatteSurfaceCard
-import com.example.ui.theme.MatteSurfaceElevated
-import com.example.ui.theme.PlatinumPrimary
-import com.example.ui.theme.SilverSecondary
 
 @Composable
 fun PermissionGate(
@@ -77,13 +72,14 @@ fun PermissionGate(
     Box(
         modifier = Modifier
             .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
             .padding(24.dp),
         contentAlignment = Alignment.Center
     ) {
         Card(
             shape = RoundedCornerShape(28.dp),
-            colors = CardDefaults.cardColors(containerColor = MatteSurfaceCard),
-            border = androidx.compose.foundation.BorderStroke(1.dp, MatteBorder),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            border = androidx.compose.foundation.BorderStroke(0.5.dp, MaterialTheme.colorScheme.outline),
             modifier = Modifier
                 .fillMaxWidth()
                 .testTag("permission_gate_card")
@@ -100,14 +96,14 @@ fun PermissionGate(
                     modifier = Modifier
                         .size(72.dp)
                         .clip(CircleShape)
-                        .background(MatteSurfaceElevated)
-                        .border(1.dp, MatteBorderSubtle, CircleShape),
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                        .border(0.5.dp, MaterialTheme.colorScheme.outline, CircleShape),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         imageVector = Icons.Default.PermMedia,
                         contentDescription = null,
-                        tint = PlatinumPrimary,
+                        tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(32.dp)
                     )
                 }
@@ -116,9 +112,9 @@ fun PermissionGate(
 
                 Text(
                     text = "الوصول إلى وسائط الجهاز",
-                    color = PlatinumPrimary,
+                    color = MaterialTheme.colorScheme.primary,
                     fontSize = 18.sp,
-                    fontWeight = FontWeight.SemiBold,
+                    fontWeight = FontWeight.Bold,
                     textAlign = TextAlign.Center
                 )
 
@@ -126,7 +122,7 @@ fun PermissionGate(
 
                 Text(
                     text = "يتطلب تطبيق AuraShare قراءة الصور والمقاطع لمشاركتها فورياً وبأعلى سرعة مع الحاسوب عبر الشبكة المحلية.",
-                    color = SilverSecondary,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 13.sp,
                     lineHeight = 20.sp,
                     textAlign = TextAlign.Center
@@ -145,14 +141,14 @@ fun PermissionGate(
                         modifier = Modifier
                             .size(52.dp)
                             .clip(CircleShape)
-                            .background(MatteSurfaceElevated)
-                            .border(1.dp, MatteBorderSubtle, CircleShape)
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                            .border(0.5.dp, MaterialTheme.colorScheme.outline, CircleShape)
                             .testTag("skip_permission_button")
                     ) {
                         Icon(
                             imageVector = Icons.Default.FolderOpen,
                             contentDescription = "استعراض النماذج",
-                            tint = SilverSecondary,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(22.dp)
                         )
                     }
@@ -165,13 +161,13 @@ fun PermissionGate(
                         modifier = Modifier
                             .size(56.dp)
                             .clip(CircleShape)
-                            .background(PlatinumPrimary)
+                            .background(MaterialTheme.colorScheme.primary)
                             .testTag("grant_permission_button")
                     ) {
                         Icon(
                             imageVector = Icons.Default.Check,
                             contentDescription = "منح التصريح للمتابعة",
-                            tint = MatteSurfaceCard,
+                            tint = MaterialTheme.colorScheme.onPrimary,
                             modifier = Modifier.size(24.dp)
                         )
                     }

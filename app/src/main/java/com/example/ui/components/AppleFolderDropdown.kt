@@ -35,6 +35,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.selected as accessibilitySelected
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -87,11 +88,13 @@ fun AppleFolderDropdown(
                         .fillMaxWidth()
                         .height(44.dp)
                         .clip(RoundedCornerShape(16.dp))
-                        .background(if (selected) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceVariant)
-                        .clickable {
+                        .background(if (selected) MaterialTheme.colorScheme.onSurface.copy(alpha = .12f) else MaterialTheme.colorScheme.surfaceVariant)
+                        .then(if (selected) Modifier.border(.5.dp, MaterialTheme.colorScheme.onSurface, RoundedCornerShape(16.dp)) else Modifier)
+                        .floatingMenuInteraction {
                             onFolderSelect(folder.name)
                             expanded = false
                         }
+                        .semantics { role = Role.RadioButton; accessibilitySelected = selected }
                         .padding(horizontal = 12.dp)
                         .testTag("folder_item_${folder.name}"),
                     verticalAlignment = Alignment.CenterVertically,

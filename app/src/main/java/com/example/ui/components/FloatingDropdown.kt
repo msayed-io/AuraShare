@@ -1,5 +1,16 @@
 package com.example.ui.components
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.hoverable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.ui.graphics.graphicsLayer
+import com.example.ui.theme.AuraDarkTokens
 
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.MutableTransitionState
@@ -94,8 +105,8 @@ fun FloatingDropdown(
         ) {
             Column(
                 modifier = modifier.widthIn(min = minWidth).width(IntrinsicSize.Max)
-                    .shadow(if (dark) 18.dp else 10.dp, shape, clip = false)
-                    .shadow(3.dp, shape, clip = false)
+                    .shadow(if (dark) 18.dp else 10.dp, shape, clip = false, ambientColor = Color.Black.copy(alpha = .5f), spotColor = Color.Black.copy(alpha = .5f))
+                    .shadow(3.dp, shape, clip = false, ambientColor = Color.Black.copy(alpha = .6f), spotColor = Color.Black.copy(alpha = .6f))
                     .clip(shape)
                     .background(if (dark) Color(0xFF2C2C2E) else Color.White)
                     .border(.5.dp, if (dark) Color.White.copy(alpha = .12f) else Color(0xFF121A1B).copy(alpha = .12f), shape)
@@ -105,4 +116,21 @@ fun FloatingDropdown(
             ) { content() }
         }
     }
+}
+
+/** Shared drawing-only feedback; callbacks and popup focus/dismiss behavior stay native. */
+@Composable
+fun Modifier.floatingMenuInteraction(onClick: () -> Unit): Modifier {
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val hovered by interaction.collectIsHoveredAsState()
+    val scale by animateFloatAsState(if (pressed) .98f else 1f, tween(120), label = "menuPress")
+    return this.graphicsLayer { scaleX = scale; scaleY = scale }
+        .background(if (hovered || pressed) AuraDarkTokens.Hover else Color.Transparent)
+        .drawBehind {
+            drawLine(AuraDarkTokens.Border, Offset(12.dp.toPx(), size.height),
+                Offset(size.width - 12.dp.toPx(), size.height), .5.dp.toPx())
+        }
+        .hoverable(interaction)
+        .clickable(interactionSource = interaction, indication = null, onClick = onClick)
 }
