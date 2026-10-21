@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -36,6 +37,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -53,6 +55,9 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -61,12 +66,6 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.example.data.model.AuraMediaType
 import com.example.data.model.MediaItem
-import com.example.ui.theme.GraphiteMuted
-import com.example.ui.theme.MatteBorderSubtle
-import com.example.ui.theme.MatteSurfaceCard
-import com.example.ui.theme.MatteSurfaceElevated
-import com.example.ui.theme.PlatinumPrimary
-import com.example.ui.theme.SilverSecondary
 
 @Composable
 fun MediaGridView(
@@ -74,11 +73,16 @@ fun MediaGridView(
     items: List<MediaItem>,
     dragController: FluidDragController,
     onQuickSend: (MediaItem) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    contentPadding: PaddingValues = PaddingValues(start = 12.dp, end = 12.dp, top = 80.dp, bottom = 96.dp),
+    header: @Composable () -> Unit = {}
 ) {
     if (items.isEmpty()) {
+        LazyColumn(modifier = modifier.fillMaxSize().testTag("empty_media_list"), contentPadding = contentPadding) {
+            item(key = "media_header") { header() }
+            item(key = "empty_state") {
         Box(
-            modifier = modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxWidth().padding(vertical = 32.dp),
             contentAlignment = Alignment.Center
         ) {
             Column(
@@ -89,8 +93,8 @@ fun MediaGridView(
                     modifier = Modifier
                         .size(64.dp)
                         .clip(CircleShape)
-                        .background(MatteSurfaceCard)
-                        .border(1.dp, MatteBorderSubtle, CircleShape),
+                        .background(MaterialTheme.colorScheme.surface)
+                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
@@ -100,17 +104,19 @@ fun MediaGridView(
                             AuraMediaType.FILE -> Icons.Default.FolderZip
                         },
                         contentDescription = null,
-                        tint = GraphiteMuted,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(28.dp)
                     )
                 }
                 Spacer(modifier = Modifier.height(12.dp))
                 Text(
                     text = "لا توجد ملفات متوفرة في هذا المجلد",
-                    color = SilverSecondary,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 14.sp
                 )
             }
+        }
+        }
         }
         return
     }
@@ -119,11 +125,12 @@ fun MediaGridView(
         AuraMediaType.IMAGE -> {
             LazyVerticalGrid(
                 columns = GridCells.Fixed(3),
-                contentPadding = PaddingValues(12.dp),
+                contentPadding = contentPadding,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = modifier.fillMaxSize().testTag("images_grid")
             ) {
+                item(key = "media_header", span = { GridItemSpan(maxLineSpan) }) { header() }
                 items(items, key = { "img_${it.id}" }) { item ->
                     ImageGridItem(
                         item = item,
@@ -136,11 +143,12 @@ fun MediaGridView(
         AuraMediaType.VIDEO -> {
             LazyVerticalGrid(
                 columns = GridCells.Fixed(2),
-                contentPadding = PaddingValues(12.dp),
+                contentPadding = contentPadding,
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
                 modifier = modifier.fillMaxSize().testTag("videos_grid")
             ) {
+                item(key = "media_header", span = { GridItemSpan(maxLineSpan) }) { header() }
                 items(items, key = { "vid_${it.id}" }) { item ->
                     VideoGridItem(
                         item = item,
@@ -152,10 +160,11 @@ fun MediaGridView(
         }
         AuraMediaType.FILE -> {
             LazyColumn(
-                contentPadding = PaddingValues(12.dp),
+                contentPadding = contentPadding,
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = modifier.fillMaxSize().testTag("files_list")
             ) {
+                item(key = "media_header") { header() }
                 items(items, key = { "file_${it.id}" }) { item ->
                     FileListRowItem(
                         item = item,
@@ -179,8 +188,8 @@ private fun ImageGridItem(
 
     Card(
         shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MatteSurfaceCard),
-        border = androidx.compose.foundation.BorderStroke(1.dp, MatteBorderSubtle),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
         modifier = Modifier
             .fillMaxWidth()
             .aspectRatio(1f)
@@ -192,6 +201,9 @@ private fun ImageGridItem(
                 getItemRootOffset = { itemRootOffset },
                 dragController = dragController
             )
+            .semantics {
+                customActions = listOf(CustomAccessibilityAction("إرسال إلى الحاسوب") { onQuickSend(item); true })
+            }
             .testTag("media_item_${item.id}")
     ) {
         Box(
@@ -215,12 +227,12 @@ private fun ImageGridItem(
                     .align(Alignment.BottomEnd)
                     .padding(6.dp)
                     .clip(RoundedCornerShape(8.dp))
-                    .background(MatteSurfaceCard.copy(alpha = 0.85f))
+                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.85f))
                     .padding(horizontal = 6.dp, vertical = 2.dp)
             ) {
                 Text(
                     text = item.formattedSize,
-                    color = SilverSecondary,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 10.sp,
                     fontWeight = FontWeight.Medium
                 )
@@ -240,8 +252,8 @@ private fun VideoGridItem(
 
     Card(
         shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(containerColor = MatteSurfaceCard),
-        border = androidx.compose.foundation.BorderStroke(1.dp, MatteBorderSubtle),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
         modifier = Modifier
             .fillMaxWidth()
             .aspectRatio(1.2f)
@@ -253,6 +265,9 @@ private fun VideoGridItem(
                 getItemRootOffset = { itemRootOffset },
                 dragController = dragController
             )
+            .semantics {
+                customActions = listOf(CustomAccessibilityAction("إرسال إلى الحاسوب") { onQuickSend(item); true })
+            }
             .testTag("video_item_${item.id}")
     ) {
         Box(
@@ -276,13 +291,13 @@ private fun VideoGridItem(
                     .align(Alignment.Center)
                     .size(36.dp)
                     .clip(CircleShape)
-                    .background(MatteSurfaceCard.copy(alpha = 0.8f)),
+                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.8f)),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
                     imageVector = Icons.Default.PlayArrow,
                     contentDescription = null,
-                    tint = PlatinumPrimary,
+                    tint = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.size(20.dp)
                 )
             }
@@ -293,13 +308,13 @@ private fun VideoGridItem(
                     .align(Alignment.TopStart)
                     .padding(8.dp)
                     .clip(RoundedCornerShape(12.dp))
-                    .background(MatteSurfaceElevated.copy(alpha = 0.9f))
-                    .border(1.dp, MatteBorderSubtle, RoundedCornerShape(12.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.9f))
+                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(12.dp))
                     .padding(horizontal = 8.dp, vertical = 3.dp)
             ) {
                 Text(
                     text = item.formattedDuration,
-                    color = PlatinumPrimary,
+                    color = MaterialTheme.colorScheme.onSurface,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Medium
                 )
@@ -311,12 +326,12 @@ private fun VideoGridItem(
                     .align(Alignment.BottomEnd)
                     .padding(8.dp)
                     .clip(RoundedCornerShape(10.dp))
-                    .background(MatteSurfaceCard.copy(alpha = 0.85f))
+                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.85f))
                     .padding(horizontal = 7.dp, vertical = 2.dp)
             ) {
                 Text(
                     text = item.formattedSize,
-                    color = SilverSecondary,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 10.sp
                 )
             }
@@ -342,8 +357,8 @@ private fun FileListRowItem(
 
     Card(
         shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MatteSurfaceCard),
-        border = androidx.compose.foundation.BorderStroke(1.dp, MatteBorderSubtle),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
         modifier = Modifier
             .fillMaxWidth()
             .height(68.dp)
@@ -369,14 +384,14 @@ private fun FileListRowItem(
                 modifier = Modifier
                     .size(42.dp)
                     .clip(RoundedCornerShape(12.dp))
-                    .background(MatteSurfaceElevated)
-                    .border(1.dp, MatteBorderSubtle, RoundedCornerShape(12.dp)),
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(12.dp)),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
                     imageVector = icon,
                     contentDescription = null,
-                    tint = PlatinumPrimary,
+                    tint = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.size(22.dp)
                 )
             }
@@ -386,7 +401,7 @@ private fun FileListRowItem(
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = item.name,
-                    color = PlatinumPrimary,
+                    color = MaterialTheme.colorScheme.onSurface,
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Medium,
                     maxLines = 1,
@@ -395,7 +410,7 @@ private fun FileListRowItem(
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
                     text = item.formattedSize,
-                    color = GraphiteMuted,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 12.sp
                 )
             }
@@ -406,13 +421,13 @@ private fun FileListRowItem(
                 modifier = Modifier
                     .size(36.dp)
                     .clip(CircleShape)
-                    .background(MatteSurfaceElevated)
-                    .border(1.dp, MatteBorderSubtle, CircleShape)
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape)
             ) {
                 Icon(
                     imageVector = Icons.Default.Send,
                     contentDescription = "إرسال الملف للحاسوب",
-                    tint = SilverSecondary,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(16.dp)
                 )
             }

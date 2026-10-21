@@ -8,6 +8,10 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -29,6 +33,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -41,14 +46,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.TransferRecord
 import com.example.data.model.TransferStatus
-import com.example.ui.theme.GraphiteMuted
-import com.example.ui.theme.MatteBackground
-import com.example.ui.theme.MatteBorder
-import com.example.ui.theme.MatteBorderSubtle
-import com.example.ui.theme.MatteSurfaceCard
-import com.example.ui.theme.MatteSurfaceElevated
-import com.example.ui.theme.PlatinumPrimary
-import com.example.ui.theme.SilverSecondary
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -57,77 +54,59 @@ fun TransferHistorySheet(
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
-        containerColor = MatteSurfaceCard,
+        containerColor = MaterialTheme.colorScheme.background,
+        dragHandle = null,
         shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 10.dp)
-        ) {
-            // Header
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "سجل دفق الملفات اللاسلكي",
-                    color = PlatinumPrimary,
-                    fontSize = 17.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
-
-                IconButton(
-                    onClick = onDismiss,
-                    modifier = Modifier
-                        .size(36.dp)
-                        .clip(CircleShape)
-                        .background(MatteSurfaceElevated)
-                        .border(1.dp, MatteBorderSubtle, CircleShape)
-                        .testTag("close_history_sheet_button")
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Close,
-                        contentDescription = "إغلاق السجل",
-                        tint = SilverSecondary,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            if (transfers.isEmpty()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(180.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        text = "لم يتم إرسال أي ملفات خلال هذه الجلسة",
-                        color = GraphiteMuted,
-                        fontSize = 14.sp
-                    )
-                }
-            } else {
+        FloatingBackdropHost(
+            modifier = Modifier.fillMaxWidth().fillMaxHeight(.85f),
+            content = {
                 LazyColumn(
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 80.dp, bottom = 32.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 24.dp)
+                    modifier = Modifier.fillMaxSize().testTag("transfer_history_list")
                 ) {
-                    items(transfers, key = { it.id }) { record ->
-                        TransferHistoryItem(record = record)
+                    if (transfers.isEmpty()) {
+                        item {
+                            Text(
+                                "لم يتم إرسال أي ملفات خلال هذه الجلسة",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 14.sp,
+                                modifier = Modifier.padding(vertical = 40.dp)
+                            )
+                        }
+                    } else {
+                        items(transfers, key = { it.id }) { TransferHistoryItem(it) }
                     }
                 }
+            },
+            overlay = {
+                FloatingTopDissolve()
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    FloatingGlassSurface(modifier = Modifier.widthIn(max = 240.dp)) {
+                        Text(
+                            "سجل النقل",
+                            color = MaterialTheme.colorScheme.onSurface,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(horizontal = 20.dp)
+                        )
+                    }
+                    CircularBackButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.testTag("close_history_sheet_button"),
+                        contentDescription = "العودة وإغلاق سجل النقل"
+                    )
+                }
             }
-        }
+        )
     }
 }
 
@@ -135,8 +114,8 @@ fun TransferHistorySheet(
 private fun TransferHistoryItem(record: TransferRecord) {
     Card(
         shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MatteSurfaceElevated),
-        border = androidx.compose.foundation.BorderStroke(1.dp, MatteBorderSubtle),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
         modifier = Modifier.fillMaxWidth()
     ) {
         Row(
@@ -149,8 +128,8 @@ private fun TransferHistoryItem(record: TransferRecord) {
                 modifier = Modifier
                     .size(40.dp)
                     .clip(CircleShape)
-                    .background(MatteSurfaceCard)
-                    .border(1.dp, MatteBorderSubtle, CircleShape),
+                    .background(MaterialTheme.colorScheme.surface)
+                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
@@ -162,10 +141,10 @@ private fun TransferHistoryItem(record: TransferRecord) {
                     },
                     contentDescription = null,
                     tint = when (record.status) {
-                        TransferStatus.COMPLETED -> PlatinumPrimary
-                        TransferStatus.STREAMING -> PlatinumPrimary
-                        TransferStatus.FAILED -> SilverSecondary
-                        TransferStatus.QUEUED -> GraphiteMuted
+                        TransferStatus.COMPLETED -> MaterialTheme.colorScheme.onSurface
+                        TransferStatus.STREAMING -> MaterialTheme.colorScheme.onSurface
+                        TransferStatus.FAILED -> MaterialTheme.colorScheme.onSurfaceVariant
+                        TransferStatus.QUEUED -> MaterialTheme.colorScheme.onSurfaceVariant
                     },
                     modifier = Modifier.size(20.dp)
                 )
@@ -176,7 +155,7 @@ private fun TransferHistoryItem(record: TransferRecord) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = record.item.name,
-                    color = PlatinumPrimary,
+                    color = MaterialTheme.colorScheme.onSurface,
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Medium,
                     maxLines = 1,
@@ -186,13 +165,13 @@ private fun TransferHistoryItem(record: TransferRecord) {
                 Row {
                     Text(
                         text = record.item.formattedSize,
-                        color = GraphiteMuted,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 12.sp
                     )
                     if (record.speedBytesPerSec > 0) {
                         Text(
                             text = " • ${record.formattedSpeed}",
-                            color = SilverSecondary,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                             fontSize = 12.sp
                         )
                     }
@@ -206,7 +185,7 @@ private fun TransferHistoryItem(record: TransferRecord) {
                     TransferStatus.FAILED -> "تعذر النقل"
                     TransferStatus.QUEUED -> "في الانتظار"
                 },
-                color = if (record.status == TransferStatus.COMPLETED) PlatinumPrimary else SilverSecondary,
+                color = if (record.status == TransferStatus.COMPLETED) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Medium
             )

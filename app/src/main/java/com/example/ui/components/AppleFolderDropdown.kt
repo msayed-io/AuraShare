@@ -1,16 +1,10 @@
 package com.example.ui.components
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -24,12 +18,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.FolderOpen
-import androidx.compose.material.icons.filled.PhotoLibrary
-import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -38,27 +30,20 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Popup
-import androidx.compose.ui.window.PopupProperties
-import com.example.ui.theme.GraphiteMuted
-import com.example.ui.theme.MatteBorder
-import com.example.ui.theme.MatteSurfaceCard
-import com.example.ui.theme.MatteSurfaceElevated
-import com.example.ui.theme.PlatinumPrimary
-import com.example.ui.theme.SilverSecondary
 
 data class FolderOption(
     val name: String,
     val count: Int,
-    val icon: ImageVector = Icons.Outlined.Folder
+    val icon: ImageVector = Icons.Outlined.Folder,
 )
 
 @Composable
@@ -66,111 +51,68 @@ fun AppleFolderDropdown(
     folders: List<FolderOption>,
     selectedFolder: String,
     onFolderSelect: (String) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
 ) {
-    var isExpanded by remember { mutableStateOf(false) }
-
+    var expanded by remember { mutableStateOf(false) }
     Box(modifier = modifier) {
-        // Icon-only trigger button conforming to strict no-text policy
-        IconButton(
-            onClick = { isExpanded = !isExpanded },
+        // The painted control is exactly 44dp; Compose's IconButton-like semantics are retained.
+        Box(
             modifier = Modifier
-                .size(42.dp)
+                .size(44.dp)
                 .clip(CircleShape)
-                .background(if (isExpanded) MatteSurfaceElevated else MatteSurfaceCard)
-                .border(1.dp, MatteBorder, CircleShape)
-                .testTag("folder_dropdown_button")
+                .background(if (expanded) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.surface)
+                .border(.5.dp, MaterialTheme.colorScheme.outline, CircleShape)
+                .clickable { expanded = !expanded }
+                .semantics { role = Role.Button }
+                .testTag("folder_dropdown_button"),
+            contentAlignment = Alignment.Center,
         ) {
             Icon(
-                imageVector = if (isExpanded) Icons.Default.FolderOpen else Icons.Default.Folder,
+                if (expanded) Icons.Default.FolderOpen else Icons.Default.Folder,
                 contentDescription = "اختيار المجلد المحلي",
-                tint = PlatinumPrimary,
-                modifier = Modifier.size(20.dp)
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(20.dp),
             )
         }
-
-        // Apple Dropdown Philosophy: Absolute Floating Popup Overlay
-        if (isExpanded) {
-            Popup(
-                alignment = Alignment.TopEnd,
-                offset = IntOffset(x = 0, y = 120),
-                onDismissRequest = { isExpanded = false },
-                properties = PopupProperties(
-                    focusable = true,
-                    dismissOnBackPress = true,
-                    dismissOnClickOutside = true
-                )
-            ) {
-                Column(
+        FloatingDropdown(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            alignment = Alignment.TopStart,
+            minWidth = 178.dp,
+            maxHeight = 360.dp,
+        ) {
+            folders.forEach { folder ->
+                val selected = folder.name == selectedFolder
+                Row(
                     modifier = Modifier
-                        .width(250.dp) // Fixed width strictly 250dp
-                        .shadow(16.dp, RoundedCornerShape(18.dp))
-                        .clip(RoundedCornerShape(18.dp))
-                        .background(MatteSurfaceElevated)
-                        .border(1.dp, MatteBorder, RoundedCornerShape(18.dp))
-                        .padding(vertical = 6.dp)
-                ) {
-                    folders.forEach { folder ->
-                        val isSelected = folder.name == selectedFolder
-
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(44.dp) // Strict 44dp item height
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(
-                                    if (isSelected) MatteSurfaceCard else MatteSurfaceElevated
-                                )
-                                .clickable {
-                                    onFolderSelect(folder.name)
-                                    isExpanded = false
-                                }
-                                .padding(horizontal = 12.dp)
-                                .testTag("folder_item_${folder.name}")
-                        ) {
-                            // Uniform 24dp slot magnetically aligned
-                            Box(
-                                modifier = Modifier.size(24.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = folder.icon,
-                                    contentDescription = null,
-                                    tint = if (isSelected) PlatinumPrimary else SilverSecondary,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-
-                            Spacer(modifier = Modifier.width(10.dp))
-
-                            // Strict 1-2 words with text-overflow ellipsis
-                            Text(
-                                text = folder.name,
-                                color = if (isSelected) PlatinumPrimary else SilverSecondary,
-                                fontSize = 14.sp,
-                                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f)
-                            )
-
-                            if (isSelected) {
-                                Icon(
-                                    imageVector = Icons.Default.Check,
-                                    contentDescription = null,
-                                    tint = PlatinumPrimary,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                            } else {
-                                Text(
-                                    text = folder.count.toString(),
-                                    color = GraphiteMuted,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Light
-                                )
-                            }
+                        .fillMaxWidth()
+                        .height(44.dp)
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(if (selected) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceVariant)
+                        .clickable {
+                            onFolderSelect(folder.name)
+                            expanded = false
                         }
+                        .padding(horizontal = 12.dp)
+                        .testTag("folder_item_${folder.name}"),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Start,
+                ) {
+                    Icon(folder.icon, null, tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        folder.name,
+                        color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                        fontSize = 14.sp,
+                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (selected) {
+                        Icon(Icons.Default.Check, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
+                    } else {
+                        Text(folder.count.toString(), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
                     }
                 }
             }

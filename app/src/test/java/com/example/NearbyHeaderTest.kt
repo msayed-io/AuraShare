@@ -2,6 +2,7 @@ package com.example
 
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import com.example.data.network.DiscoveryState
@@ -31,6 +32,7 @@ class NearbyHeaderTest {
                     onOpenHistory = {}, onCapsuleBoundsChanged = {}, isBeingAttracted = false)
             }
         }
+        compose.onNodeWithTag("desktop_capsule_status").performClick()
         compose.onNodeWithText("Mohamed PC").assertIsDisplayed()
         compose.onNodeWithText("اقتران").performClick()
         assertEquals(peer, selected)
@@ -48,7 +50,7 @@ class NearbyHeaderTest {
                     onOpenHistory = {}, onCapsuleBoundsChanged = {}, isBeingAttracted = false)
             }
         }
-        compose.onNodeWithText("مُتصل بالحاسوب").assertIsDisplayed()
+        compose.onNodeWithTag("desktop_capsule_status").performClick()
         compose.onNodeWithText("Mohamed PC").assertIsDisplayed()
         compose.onNodeWithText("قطع الاتصال").performClick()
         assertEquals(peer, selected)

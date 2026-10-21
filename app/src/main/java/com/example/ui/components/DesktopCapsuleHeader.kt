@@ -1,15 +1,11 @@
 package com.example.ui.components
 
-import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -23,22 +19,27 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.SettingsEthernet
 import androidx.compose.material.icons.filled.Wifi
-import androidx.compose.material.icons.filled.WifiOff
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.Button
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -47,6 +48,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -55,14 +60,8 @@ import com.example.data.model.TransferStatus
 import com.example.data.network.DiscoveryState
 import com.example.data.network.NearbyPeer
 import com.example.data.network.PeerStatus
-import com.example.ui.theme.GraphiteMuted
-import com.example.ui.theme.GraphiteTrack
-import com.example.ui.theme.MatteBorder
-import com.example.ui.theme.MatteBorderSubtle
-import com.example.ui.theme.MatteSurfaceCard
-import com.example.ui.theme.MatteSurfaceElevated
-import com.example.ui.theme.PlatinumPrimary
-import com.example.ui.theme.SilverSecondary
+
+private val HeaderCapsuleShape = RoundedCornerShape(22.dp)
 
 @Composable
 fun DesktopCapsuleHeader(
@@ -74,206 +73,151 @@ fun DesktopCapsuleHeader(
     onOpenHistory: () -> Unit,
     onCapsuleBoundsChanged: (androidx.compose.ui.geometry.Rect) -> Unit,
     isBeingAttracted: Boolean,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    title: String = "AuraShare",
 ) {
     val nearby = (discoveryState as? DiscoveryState.Nearby)?.peers.orEmpty()
     val isConnected = discoveryState is DiscoveryState.Connected || nearby.any { it.status == PeerStatus.CONNECTED }
     val isSearching = discoveryState is DiscoveryState.Searching
-    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
-    val pulseScale by infiniteTransition.animateFloat(
-        initialValue = 0.95f,
-        targetValue = 1.05f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(1200, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "pulseScale"
+    var statusExpanded by remember { mutableStateOf(false) }
+    var actionsExpanded by remember { mutableStateOf(false) }
+    val pulse by rememberInfiniteTransition(label = "nearby-pulse").animateFloat(
+        .95f, 1.05f, infiniteRepeatable(tween(1200, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "pulse"
     )
+    val surface = MaterialTheme.colorScheme.surface
+    val onSurface = MaterialTheme.colorScheme.onSurface
+    val titleMaxWidth = (LocalConfiguration.current.screenWidthDp.dp - 164.dp).coerceAtLeast(76.dp)
 
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
+    Row(
+        modifier = modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            // Icon-only Action: Refresh / Re-scan
-            IconButton(
-                onClick = onRefreshDiscovery,
+        // In RTL this first child is the physical right edge: identity + status icon only.
+        Box {
+            FloatingGlassSurface(
                 modifier = Modifier
-                    .size(42.dp)
-                    .clip(CircleShape)
-                    .background(MatteSurfaceCard)
-                    .border(1.dp, MatteBorderSubtle, CircleShape)
-                    .testTag("refresh_discovery_button")
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Refresh,
-                    contentDescription = "إعادة البحث عن الخادم",
-                    tint = SilverSecondary,
-                    modifier = Modifier.size(20.dp)
-                )
-            }
-
-            // Magnetic Absorption Desktop Capsule
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(horizontal = 10.dp)
-                    .onGloballyPositioned { coordinates ->
-                        onCapsuleBoundsChanged(coordinates.boundsInRoot())
-                    }
-                    .scale(if (isBeingAttracted) 1.08f else 1f)
-                    .clip(RoundedCornerShape(32.dp))
-                    .background(
-                        if (isConnected) MatteSurfaceElevated else MatteSurfaceCard
-                    )
-                    .border(
-                        width = if (isBeingAttracted) 2.dp else 1.dp,
-                        color = if (isBeingAttracted) PlatinumPrimary else MatteBorder,
-                        shape = RoundedCornerShape(32.dp)
-                    )
-                    .padding(horizontal = 14.dp, vertical = 10.dp)
+                    .widthIn(max = titleMaxWidth)
+                    .onGloballyPositioned { onCapsuleBoundsChanged(it.boundsInRoot()) }
+                    .semantics { stateDescription = statusLabel(discoveryState, isConnected) }
                     .testTag("desktop_capsule_status"),
-                contentAlignment = Alignment.Center
+                height = 44.dp,
+                contentDescription = "$title، ${statusLabel(discoveryState, isConnected)}",
+                onClick = { statusExpanded = !statusExpanded },
             ) {
                 Row(
+                    modifier = Modifier.padding(horizontal = 12.dp),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center
+                    horizontalArrangement = Arrangement.spacedBy(7.dp),
                 ) {
-                    // Status icon node
-                    Box(
-                        modifier = Modifier
-                            .size(10.dp)
-                            .clip(CircleShape)
-                            .background(
-                                when {
-                                    isConnected -> PlatinumPrimary
-                                    isSearching -> PlatinumPrimary.copy(alpha = 0.4f)
-                                    else -> GraphiteMuted
-                                }
-                            )
-                            .scale(if (isSearching) pulseScale else 1f)
-                    )
-
-                    Spacer(modifier = Modifier.width(8.dp))
-
-                    Icon(
-                        imageVector = if (isConnected) Icons.Default.Computer else Icons.Default.Wifi,
-                        contentDescription = null,
-                        tint = if (isConnected) PlatinumPrimary else SilverSecondary,
-                        modifier = Modifier.size(18.dp)
-                    )
-
-                    Spacer(modifier = Modifier.width(8.dp))
-
-                    // Exact solid Arabic status copy required by prompt
-                    Text(
-                        text = when (discoveryState) {
-                            is DiscoveryState.Connected -> "مُتصل بالحاسوب"
-                            is DiscoveryState.Searching -> "جاري رصد الحاسوب..."
-                            is DiscoveryState.Discovered -> "تم اكتشاف الحاسوب"
-                            is DiscoveryState.Error -> "الخادم غير متصل"
-                            is DiscoveryState.Nearby -> if (isConnected) "مُتصل بالحاسوب" else "حواسيب قريبة"
-                            DiscoveryState.Idle -> "جاهز للربط"
-                        },
-                        color = PlatinumPrimary,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
+                    Text(title, color = onSurface, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                    Box(Modifier.size(8.dp).scale(if (isSearching) pulse else 1f).clip(CircleShape).background(if (isConnected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant))
+                    Icon(if (isConnected) Icons.Default.Computer else Icons.Default.Wifi, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(16.dp))
                 }
             }
-
-            // Right Action Buttons (Icon-Only)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                IconButton(
-                    onClick = onOpenHistory,
-                    modifier = Modifier
-                        .size(42.dp)
-                        .clip(CircleShape)
-                        .background(MatteSurfaceCard)
-                        .border(1.dp, MatteBorderSubtle, CircleShape)
-                        .testTag("transfer_history_button")
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.History,
-                        contentDescription = "سجل عمليات النقل",
-                        tint = SilverSecondary,
-                        modifier = Modifier.size(20.dp)
-                    )
-                }
+            FloatingDropdown(
+                expanded = statusExpanded,
+                onDismissRequest = { statusExpanded = false },
+                alignment = Alignment.TopStart,
+                modifier = Modifier.width(300.dp),
+            ) {
+                NearbyConnectionDetails(
+                    discoveryState = discoveryState,
+                    currentTransfer = currentTransfer,
+                    onPair = { onPair(it); statusExpanded = false },
+                    onDisconnect = { onDisconnect(it); statusExpanded = false },
+                )
             }
         }
 
-        nearby.forEach { peer ->
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(peer.deviceName ?: "اسم الكمبيوتر غير متاح", color = SilverSecondary, fontSize = 13.sp, maxLines = 1)
-                    Text("عنوان الكمبيوتر الفعلي: ${peer.host}", color = GraphiteMuted, fontSize = 11.sp)
-                    Text(when(peer.status) {
-                        PeerStatus.CONNECTED -> "متصل وجاهز للإرسال"
-                        PeerStatus.PAIRING -> "بانتظار موافقتك على الكمبيوتر"
-                        PeerStatus.DISCONNECTED -> "انقطع الاتصال؛ يمكنك إعادة الاقتران"
-                        PeerStatus.NEARBY -> "متاح للاقتران"
-                    }, color = SilverSecondary, fontSize = 11.sp)
-                }
-                Button(onClick = { if (peer.status == PeerStatus.CONNECTED) onDisconnect(peer) else onPair(peer) },
-                    enabled = peer.status != PeerStatus.PAIRING,
-                    modifier = Modifier.testTag(if (peer.status == PeerStatus.CONNECTED) "disconnect_${peer.serviceName}" else "pair_${peer.serviceName}")) {
-                    Text(if (peer.status == PeerStatus.CONNECTED) "قطع الاتصال" else if (peer.status == PeerStatus.PAIRING) "بانتظار الموافقة" else "اقتران")
+        // In RTL this group is the physical left edge: a single 44dp controls capsule.
+        FloatingGlassSurface(height = 44.dp, shape = HeaderCapsuleShape, modifier = Modifier.testTag("desktop_capsule_controls")) {
+            Row(modifier = Modifier.padding(horizontal = 4.dp), horizontalArrangement = Arrangement.spacedBy(0.dp), verticalAlignment = Alignment.CenterVertically) {
+                HeaderIconButton("refresh_discovery_button", "إعادة البحث عن الخادم", Icons.Default.Refresh, onRefreshDiscovery)
+                HeaderIconButton("transfer_history_button", "سجل عمليات النقل", Icons.Default.History, onOpenHistory)
+                Box {
+                    HeaderIconButton("header_more_button", "المزيد من الإجراءات", Icons.Default.MoreVert, { actionsExpanded = true })
+                    FloatingDropdown(
+                        expanded = actionsExpanded,
+                        onDismissRequest = { actionsExpanded = false },
+                        alignment = Alignment.TopStart,
+                        modifier = Modifier.width(188.dp),
+                    ) {
+                        HeaderMenuItem(Icons.Default.Refresh, "إعادة البحث", onRefreshDiscovery) { actionsExpanded = false }
+                        HeaderMenuItem(Icons.Default.History, "سجل النقل", onOpenHistory) { actionsExpanded = false }
+                    }
                 }
             }
-        }
-
-        if (discoveryState is DiscoveryState.Error) Text(discoveryState.message, color = SilverSecondary, fontSize = 12.sp)
-        Text("على نفس الشبكة الخاصة؛ النقل غير مشفّر وأسماء الأجهزة غير موثّقة.", color = GraphiteMuted, fontSize = 10.sp)
-
-        // Live High-Speed Streaming Progress Banner inside Capsule Area
-        if (currentTransfer != null && currentTransfer.status == TransferStatus.STREAMING) {
-            Spacer(modifier = Modifier.height(6.dp))
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(MatteSurfaceCard)
-                    .border(1.dp, MatteBorderSubtle, RoundedCornerShape(12.dp))
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text(
-                    text = currentTransfer.item.name,
-                    color = SilverSecondary,
-                    fontSize = 12.sp,
-                    maxLines = 1,
-                    modifier = Modifier.weight(1f)
-                )
-
-                Text(
-                    text = currentTransfer.formattedSpeed,
-                    color = PlatinumPrimary,
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Medium
-                )
-            }
-            Spacer(modifier = Modifier.height(4.dp))
-            LinearProgressIndicator(
-                progress = { currentTransfer.progress },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(3.dp)
-                    .clip(RoundedCornerShape(2.dp)),
-                color = PlatinumPrimary,
-                trackColor = GraphiteTrack
-            )
         }
     }
+}
+
+@Composable
+private fun HeaderIconButton(tag: String, description: String, icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: () -> Unit) {
+    IconButton(onClick = onClick, modifier = Modifier.size(36.dp).testTag(tag)) {
+        Icon(icon, description, tint = MaterialTheme.colorScheme.onSurface, modifier = Modifier.size(16.dp))
+    }
+}
+
+@Composable
+private fun HeaderMenuItem(icon: androidx.compose.ui.graphics.vector.ImageVector, label: String, onClick: () -> Unit, close: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().height(44.dp).clip(RoundedCornerShape(16.dp)).clickable { onClick(); close() }.padding(horizontal = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Icon(icon, null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+        Text(label, color = MaterialTheme.colorScheme.onSurface, fontSize = 13.sp)
+    }
+}
+
+@Composable
+fun NearbyConnectionDetails(
+    discoveryState: DiscoveryState,
+    currentTransfer: TransferRecord?,
+    onPair: (NearbyPeer) -> Unit,
+    onDisconnect: (NearbyPeer) -> Unit,
+) {
+    val nearby = (discoveryState as? DiscoveryState.Nearby)?.peers.orEmpty()
+    Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("الاتصال القريب", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+        nearby.forEach { peer ->
+            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(MaterialTheme.colorScheme.surface).padding(10.dp)) {
+                Text(peer.deviceName ?: "اسم الكمبيوتر غير متاح", color = MaterialTheme.colorScheme.onSurface, fontSize = 13.sp)
+                Text("العنوان الفعلي: ${peer.host}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
+                Text(peerStatusLabel(peer.status), color = MaterialTheme.colorScheme.onSurface, fontSize = 11.sp)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    if (peer.status == PeerStatus.CONNECTED) "قطع الاتصال" else if (peer.status == PeerStatus.PAIRING) "بانتظار الموافقة" else "اقتران",
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.clip(RoundedCornerShape(16.dp)).clickable(enabled = peer.status != PeerStatus.PAIRING) { if (peer.status == PeerStatus.CONNECTED) onDisconnect(peer) else onPair(peer) }.padding(horizontal = 10.dp, vertical = 8.dp).testTag(if (peer.status == PeerStatus.CONNECTED) "disconnect_${peer.serviceName}" else "pair_${peer.serviceName}"),
+                    fontSize = 12.sp,
+                )
+            }
+        }
+        if (nearby.isEmpty()) Text(statusLabel(discoveryState, false), color = MaterialTheme.colorScheme.onSurface, fontSize = 12.sp)
+        if (discoveryState is DiscoveryState.Error) Text(discoveryState.message, color = MaterialTheme.colorScheme.onSurface, fontSize = 12.sp)
+        Text("على نفس الشبكة الخاصة؛ النقل غير مشفّر وأسماء الأجهزة غير موثّقة.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 10.sp)
+        if (currentTransfer?.status == TransferStatus.STREAMING) {
+            Text(currentTransfer.item.name, color = MaterialTheme.colorScheme.onSurface, fontSize = 12.sp, maxLines = 1)
+            Text(currentTransfer.formattedSpeed, color = MaterialTheme.colorScheme.primary, fontSize = 12.sp)
+            LinearProgressIndicator({ currentTransfer.progress }, Modifier.fillMaxWidth().height(3.dp), color = MaterialTheme.colorScheme.primary, trackColor = MaterialTheme.colorScheme.surfaceVariant)
+        }
+    }
+}
+
+private fun statusLabel(state: DiscoveryState, connected: Boolean) = when (state) {
+    is DiscoveryState.Connected -> "مُتصل بالحاسوب"
+    is DiscoveryState.Searching -> "جاري رصد الحاسوب..."
+    is DiscoveryState.Discovered -> "تم اكتشاف الحاسوب"
+    is DiscoveryState.Error -> "الخادم غير متصل"
+    is DiscoveryState.Nearby -> if (connected) "مُتصل بالحاسوب" else "حواسيب قريبة"
+    DiscoveryState.Idle -> "جاهز للربط"
+}
+
+private fun peerStatusLabel(status: PeerStatus) = when (status) {
+    PeerStatus.CONNECTED -> "متصل وجاهز للإرسال"
+    PeerStatus.PAIRING -> "بانتظار موافقتك على الكمبيوتر"
+    PeerStatus.DISCONNECTED -> "انقطع الاتصال؛ يمكنك إعادة الاقتران"
+    PeerStatus.NEARBY -> "متاح للاقتران"
 }
