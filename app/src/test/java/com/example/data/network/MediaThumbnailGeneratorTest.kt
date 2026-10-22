@@ -90,6 +90,20 @@ class MediaThumbnailGeneratorTest {
             checkNotNull(javaClass.getResourceAsStream("/thumbnail-exif-rotate90.jpg")).use { input ->
                 file.outputStream().use { input.copyTo(it) }
             }
+            runCatching {
+                app.contentResolver.openFileDescriptor(Uri.fromFile(file), "r")!!.use { pfd ->
+                    android.media.ExifInterface(pfd.fileDescriptor).getAttributeInt(
+                        android.media.ExifInterface.TAG_ORIENTATION, -1)
+                }
+            }.onSuccess { println("EXIF_TRACE descriptor orientation=$it") }
+                .onFailure { println("EXIF_TRACE descriptor failure=$it"); it.printStackTrace() }
+            runCatching {
+                app.contentResolver.openInputStream(Uri.fromFile(file))!!.use { input ->
+                    android.media.ExifInterface(input).getAttributeInt(
+                        android.media.ExifInterface.TAG_ORIENTATION, -1)
+                }
+            }.onSuccess { println("EXIF_TRACE stream orientation=$it") }
+                .onFailure { println("EXIF_TRACE stream failure=$it"); it.printStackTrace() }
             val source = item("image/jpeg").copy(uri = Uri.fromFile(file), sizeBytes = file.length())
             val encoded = MediaThumbnailGenerator(app).generate(source)
             assertNotNull(encoded)
