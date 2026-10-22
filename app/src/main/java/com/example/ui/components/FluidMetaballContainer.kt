@@ -1,17 +1,13 @@
 package com.example.ui.components
 
-import android.graphics.Paint
-import android.graphics.Path as NativePath
 import android.os.Build
-import androidx.annotation.RequiresApi
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.tween
+import android.provider.Settings
+import android.view.HapticFeedbackConstants
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -28,52 +24,48 @@ import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.Icon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ColorMatrix
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.RenderEffect as ComposeRenderEffect
-import androidx.compose.ui.graphics.asComposeRenderEffect
-import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
-import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.LayoutDirection
-import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.example.data.model.AuraMediaType
 import com.example.data.model.MediaItem
+import com.example.ui.engine.FluidEdgeEngine
+import com.example.ui.engine.FluidEdgeRenderer
 import com.example.ui.theme.MatteBorder
-import com.example.ui.theme.MatteSurfaceCard
 import com.example.ui.theme.MatteSurfaceElevated
 import com.example.ui.theme.PlatinumPrimary
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlin.math.min
 import kotlin.math.roundToInt
 
+// Preserve FallbackBridgeGeometry for existing unit tests
 internal data class FallbackBridgeGeometry(
     val anchorX: Float,
     val anchorY: Float,
@@ -83,7 +75,6 @@ internal data class FallbackBridgeGeometry(
     val cardHalfWidth: Float
 )
 
-/** Bounded arithmetic description of the pre-31 liquid bridge. */
 internal fun fallbackBridgeGeometry(
     cardCenterX: Float,
     cardCenterY: Float,
@@ -111,23 +102,8 @@ internal fun fallbackBridgeGeometry(
     )
 }
 
-@RequiresApi(Build.VERSION_CODES.S)
-private object Api31RenderEffectHelper {
-    fun createMorphRenderEffect(matrixValues: FloatArray): ComposeRenderEffect? {
-        return try {
-            val blur = android.graphics.RenderEffect.createBlurEffect(50f, 50f, android.graphics.Shader.TileMode.CLAMP)
-            val colorFilter = android.graphics.ColorMatrixColorFilter(matrixValues)
-            val effect = android.graphics.RenderEffect.createColorFilterEffect(colorFilter, blur)
-            effect.asComposeRenderEffect()
-        } catch (t: Throwable) {
-            null
-        }
-    }
-}
-
 /**
- * High-performance fluid drag controller with 1:1 true screen coordinate mapping,
- * instantaneous micro-scale spring feedback, and terminal velocity injection.
+ * Controller connecting gesture inputs directly to FluidEdgeEngine.
  */
 @Stable
 class FluidDragController(
@@ -136,158 +112,78 @@ class FluidDragController(
     val onSendItem: (MediaItem) -> Unit
 ) {
     var activeItem by mutableStateOf<MediaItem?>(null)
-        private set
+        internal set
 
-    // Direct zero-latency 60/120fps coordinate tracking
-    var posX by mutableFloatStateOf(0f)
-        private set
-    var posY by mutableFloatStateOf(0f)
-        private set
+    var engine: FluidEdgeEngine? = null
+        internal set
 
-    val animScale = Animatable(1f)
-    val animAlpha = Animatable(1f)
-    val animSwell = Animatable(0f)
-    val animReleaseY = Animatable(0f)
+    var touchX: Float = 0f
+    var touchY: Float = 0f
 
-    var isAttracted by mutableStateOf(false)
-        private set
-
-    var isAbsorbed by mutableStateOf(false)
-        private set
+    val isAttracted: Boolean
+        get() = engine?.commit == true
 
     fun startDrag(item: MediaItem, touchRootPos: Offset) {
         activeItem = item
-        posX = touchRootPos.x
-        posY = touchRootPos.y
-        isAttracted = false
-        isAbsorbed = false
-
-        coroutineScope.launch {
-            animAlpha.snapTo(1f)
-            animScale.snapTo(1f)
-            animSwell.snapTo(0f)
-            animReleaseY.snapTo(touchRootPos.y)
-
-            // Instantaneous micro-scale spring confirmation (1.1f) the millisecond long-press triggers
-            animScale.animateTo(
-                targetValue = 1.1f,
-                animationSpec = spring(
-                    dampingRatio = Spring.DampingRatioMediumBouncy,
-                    stiffness = Spring.StiffnessHigh
-                )
-            )
-        }
+        touchX = touchRootPos.x
+        touchY = touchRootPos.y
+        val eng = engine ?: return
+        val px = (touchX / density.density).toDouble()
+        val py = (touchY / density.density).toDouble()
+        val cardX = px - eng.S / 2.0
+        val cardY = py - eng.S / 2.0
+        eng.setHome(cardX, cardY)
+        eng.X.set(cardX)
+        eng.Y.set(cardY)
+        eng.onDown(px, py, pointerId = null, nowMs = System.currentTimeMillis())
     }
 
     fun dragBy(delta: Offset) {
-        if (activeItem == null || isAbsorbed) return
-
-        // 1:1 physical pixel mapping without latency
-        posX += delta.x
-        posY += delta.y
-
-        // Full top edge attraction zone (distance < 200dp from screen top)
-        val attractionThreshold = with(density) { 200.dp.toPx() }
-        val inZone = posY < attractionThreshold
-
-        if (inZone != isAttracted) {
-            isAttracted = inZone
-        }
-
-        if (inZone) {
-            val pull = ((attractionThreshold - posY) / attractionThreshold).coerceIn(0f, 1f)
-            coroutineScope.launch { animSwell.snapTo(pull) }
-        } else {
-            if (animSwell.value > 0f) {
-                coroutineScope.launch { animSwell.animateTo(0f, tween(100)) }
-            }
-        }
+        val eng = engine ?: return
+        if (eng.mode != FluidEdgeEngine.Mode.DRAG) return
+        touchX += delta.x
+        touchY += delta.y
+        val px = (touchX / density.density).toDouble()
+        val py = (touchY / density.density).toDouble()
+        eng.onMove(px, py, System.currentTimeMillis())
     }
 
-    fun endDrag(velocity: Velocity) {
-        val item = activeItem ?: return
-        if (isAbsorbed) return
-
-        val attractionThreshold = with(density) { 200.dp.toPx() }
-        val isSwipedUp = velocity.y < -300f
-        val isInsideTopZone = posY < attractionThreshold
-
-        if (isInsideTopZone || isSwipedUp) {
-            isAbsorbed = true
-            isAttracted = true
-
-            coroutineScope.launch {
-                animReleaseY.snapTo(posY)
-
-                launch {
-                    // Propels liquid asset completely past top edge using terminal velocity
-                    animReleaseY.animateTo(
-                        targetValue = -160f,
-                        initialVelocity = velocity.y,
-                        animationSpec = spring(
-                            dampingRatio = Spring.DampingRatioNoBouncy,
-                            stiffness = Spring.StiffnessMedium
-                        )
-                    )
-                }
-                launch {
-                    // Seamlessly scales down to 0f
-                    animScale.animateTo(
-                        targetValue = 0f,
-                        animationSpec = spring(
-                            dampingRatio = Spring.DampingRatioNoBouncy,
-                            stiffness = Spring.StiffnessMedium
-                        )
-                    )
-                }
-                launch {
-                    // Fades alpha channel to 0f as liquid dissolves into edge
-                    animAlpha.animateTo(
-                        targetValue = 0f,
-                        animationSpec = tween(130, easing = FastOutSlowInEasing)
-                    )
-                }
-                launch {
-                    animSwell.animateTo(1.2f, tween(80))
-                    animSwell.animateTo(0f, spring(Spring.DampingRatioNoBouncy, Spring.StiffnessMedium))
-                }
-
-                // Unlock background binary streaming sequence immediately upon layout animation completion
-                onSendItem(item)
-                activeItem = null
-                isAttracted = false
-                isAbsorbed = false
-            }
-        } else {
-            // Dismiss and return smoothly
-            coroutineScope.launch {
-                launch {
-                    animScale.animateTo(
-                        targetValue = 0.8f,
-                        animationSpec = spring(Spring.DampingRatioNoBouncy, Spring.StiffnessMedium)
-                    )
-                }
-                launch {
-                    animAlpha.animateTo(0f, tween(140))
-                }
-                launch {
-                    animSwell.animateTo(0f, tween(100))
-                }
-                activeItem = null
-                isAttracted = false
-            }
-        }
+    fun endDrag() {
+        val eng = engine ?: return
+        eng.onUp(System.currentTimeMillis())
     }
 
     fun cancelDrag() {
-        if (activeItem == null || isAbsorbed) return
-        coroutineScope.launch {
-            animAlpha.animateTo(0f, tween(120))
-            animSwell.animateTo(0f, tween(100))
-            activeItem = null
-            isAttracted = false
-        }
+        val eng = engine ?: return
+        eng.onUp(System.currentTimeMillis())
     }
+}
+
+/**
+ * Modifier to attach fluid drag gesture recognition to any media item.
+ * Zero-velocity tracking library dependency: kinematics are driven directly by FluidEdgeEngine.
+ */
+fun Modifier.fluidDraggable(
+    item: MediaItem,
+    getItemRootOffset: () -> Offset,
+    dragController: FluidDragController
+): Modifier = pointerInput(item) {
+    detectDragGesturesAfterLongPress(
+        onDragStart = { localOffset ->
+            val rootPos = getItemRootOffset() + localOffset
+            dragController.startDrag(item, rootPos)
+        },
+        onDrag = { change, dragAmount ->
+            change.consume()
+            dragController.dragBy(dragAmount)
+        },
+        onDragEnd = {
+            dragController.endDrag()
+        },
+        onDragCancel = {
+            dragController.cancelDrag()
+        }
+    )
 }
 
 @Composable
@@ -301,312 +197,242 @@ fun rememberFluidDragController(
     }
 }
 
-/**
- * Modifier to attach fluid drag gesture recognition to any media item.
- * Uses official Android detectDragGesturesAfterLongPress with velocity tracking.
- */
-fun Modifier.fluidDraggable(
-    item: MediaItem,
-    getItemRootOffset: () -> Offset,
-    dragController: FluidDragController
-): Modifier = pointerInput(item) {
-    val velocityTracker = VelocityTracker()
-    detectDragGesturesAfterLongPress(
-        onDragStart = { localOffset ->
-            velocityTracker.resetTracking()
-            val rootPos = getItemRootOffset() + localOffset
-            dragController.startDrag(item, rootPos)
-        },
-        onDrag = { change, dragAmount ->
-            change.consume()
-            velocityTracker.addPosition(change.uptimeMillis, change.position)
-            dragController.dragBy(dragAmount)
-        },
-        onDragEnd = {
-            val velocity = velocityTracker.calculateVelocity()
-            dragController.endDrag(velocity)
-        },
-        onDragCancel = {
-            dragController.cancelDrag()
-        }
-    )
-}
-
 @Composable
 fun FluidMetaballContainer(
     dragController: FluidDragController,
     content: @Composable BoxScope.() -> Unit
 ) {
     val density = LocalDensity.current
-    val activeItem = dragController.activeItem
-    val fallbackPath = remember { NativePath() }
-    val fallbackPaint = remember { Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL } }
+    val view = LocalView.current
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
 
-    // Alpha threshold matrix from reference doc
-    val alphaThresholdMatrix = remember {
-        ColorMatrix(
-            floatArrayOf(
-                1f, 0f, 0f, 0f, 0f,
-                0f, 1f, 0f, 0f, 0f,
-                0f, 0f, 1f, 0f, 0f,
-                0f, 0f, 0f, 60f, -30f
-            )
+    // Reduced motion detection
+    val isReducedMotion = remember {
+        try {
+            Settings.Global.getFloat(
+                context.contentResolver,
+                Settings.Global.ANIMATOR_DURATION_SCALE,
+                1.0f
+            ) == 0f
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    var hasSentCurrentCycle by remember { mutableStateOf(false) }
+
+    val engine = remember {
+        FluidEdgeEngine(
+            isReducedMotion = isReducedMotion,
+            onBuzz = {
+                view.performHapticFeedback(HapticFeedbackConstants.CLOCK_TICK)
+            },
+            onAbsorb = { edgeName ->
+                if (!hasSentCurrentCycle) {
+                    hasSentCurrentCycle = true
+                    val item = dragController.activeItem
+                    if (item != null) {
+                        coroutineScope.launch(Dispatchers.IO) {
+                            dragController.onSendItem(item)
+                        }
+                    }
+                }
+            },
+            onGone = {
+                // Keep item visible in background state until respawn completes
+            },
+            onRespawn = {
+                hasSentCurrentCycle = false
+                dragController.activeItem = null
+            },
+            onReturnedHome = {
+                dragController.activeItem = null
+            }
         )
     }
 
-    val morphRenderEffect: ComposeRenderEffect? = remember {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            Api31RenderEffectHelper.createMorphRenderEffect(alphaThresholdMatrix.values)
-        } else null
+    dragController.engine = engine
+    val renderer = remember { FluidEdgeRenderer() }
+
+    // Frame invalidation ticker without causing recomposition of heavy content
+    var frameTicker by remember { mutableIntStateOf(0) }
+
+    // Frame loop with withFrameNanos (exact translation of HTML frame loop)
+    LaunchedEffect(engine) {
+        var lastNanos = 0L
+        while (isActive) {
+            withFrameNanos { nowNanos ->
+                val dt = if (lastNanos == 0L) {
+                    0.016
+                } else {
+                    min(0.033, (nowNanos - lastNanos) / 1e9)
+                }
+                lastNanos = nowNanos
+
+                val nowMs = System.currentTimeMillis()
+                engine.step(dt, nowMs)
+                engine.sense(dt, nowMs)
+
+                frameTicker++
+            }
+        }
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .onSizeChanged { size ->
+                val stageW = size.width / density.density
+                val stageH = size.height / density.density
+                engine.resize(stageW.toDouble(), stageH.toDouble())
+            }
+            .pointerInput(engine) {
+                // Section 6: Stage pointerInput without touch slop
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val px = (down.position.x / density.density).toDouble()
+                    val py = (down.position.y / density.density).toDouble()
+
+                    if (dragController.activeItem != null &&
+                        engine.isPointInsideCard(px, py) &&
+                        engine.mode != FluidEdgeEngine.Mode.ABS &&
+                        engine.mode != FluidEdgeEngine.Mode.GONE
+                    ) {
+                        down.consume()
+                        val pid = down.id.value.toInt()
+                        dragController.touchX = down.position.x
+                        dragController.touchY = down.position.y
+                        engine.onDown(px, py, pointerId = pid, nowMs = System.currentTimeMillis())
+
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val currentPointer = event.changes.firstOrNull { it.id == down.id } ?: break
+
+                            if (!currentPointer.pressed) {
+                                currentPointer.consume()
+                                engine.onUp(System.currentTimeMillis())
+                                break
+                            }
+
+                            currentPointer.consume()
+                            dragController.touchX = currentPointer.position.x
+                            dragController.touchY = currentPointer.position.y
+                            val mx = (currentPointer.position.x / density.density).toDouble()
+                            val my = (currentPointer.position.y / density.density).toDouble()
+                            engine.onMove(mx, my, System.currentTimeMillis())
+                        }
+                    }
+                }
+            }
+    ) {
         // Base main application layout
         content()
 
-        // API31+ keeps the existing full-screen RenderEffect path. Older APIs use only
-        // the bounded native-path bridge below; no full-screen layer is filtered there.
-        if (activeItem != null) {
-            val swell = dragController.animSwell.value
-            val currentX = dragController.posX
-            val currentY = if (dragController.isAbsorbed) dragController.animReleaseY.value else dragController.posY
-            val api31OrNewer = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
-            val useRenderEffect = api31OrNewer && dragController.isAttracted && morphRenderEffect != null
+        // FluidEdgeDissolve Canvas Layer (Screen-blended Metaball liquid, 17-stop Halo, Wave)
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            // Read frameTicker to observe frame invalidation inside draw phase
+            val _tick = frameTicker
+            renderer.render(
+                drawScope = this,
+                engine = engine,
+                density = density.density,
+                drawBackground = false
+            )
+        }
 
-            // CRITICAL: Force LTR for the floating drag overlay to ensure 1:1 physical screen pixel mapping
+        // Active Floating Draggable Card (transformed according to Section 5.5)
+        val activeItem = dragController.activeItem
+        if (activeItem != null) {
+            val cardSizeDp = engine.S.dp
+
+            // Full-screen LTR container guarantees (0,0) is physical top-left of device screen
             CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
                 Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .graphicsLayer {
-                            if (useRenderEffect) {
-                                renderEffect = morphRenderEffect
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(cardSizeDp)
+                            .graphicsLayer {
+                            // Read frameTicker to track 60/120fps transforms inside graphicsLayer without recomposition
+                            val _tick = frameTicker
+                            val transform = engine.getCardTransform()
+                            if (!transform.isVisible) {
+                                alpha = 0f
+                            } else {
+                                translationX = (transform.x * density.density).toFloat()
+                                translationY = (transform.y * density.density).toFloat()
+                                scaleX = transform.scaleX.toFloat()
+                                scaleY = transform.scaleY.toFloat()
+                                alpha = transform.opacity.toFloat()
                             }
                         }
+                        .clip(RoundedCornerShape((engine.S * 0.26).dp))
+                        .background(MatteSurfaceElevated)
+                        .border(
+                            width = if (engine.commit) 2.dp else 1.dp,
+                            color = if (engine.commit) PlatinumPrimary else MatteBorder,
+                            shape = RoundedCornerShape((engine.S * 0.26).dp)
+                        ),
+                    contentAlignment = Alignment.Center
                 ) {
-                    if (api31OrNewer) {
-                        // Existing API31+ edge meniscus and RenderEffect behavior.
-                        Canvas(modifier = Modifier.fillMaxSize()) {
-                            drawEdgeLiquidAttraction(
-                                dropCenter = Offset(currentX, currentY),
-                                dropRadius = with(density) { 44.dp.toPx() } * dragController.animScale.value,
-                                swellFactor = swell,
-                                color = PlatinumPrimary.copy(alpha = 0.95f)
+                    when (activeItem.mediaType) {
+                        AuraMediaType.IMAGE -> {
+                            AsyncImage(
+                                model = ImageRequest.Builder(LocalContext.current)
+                                    .data(activeItem.uri)
+                                    .crossfade(true)
+                                    .build(),
+                                contentDescription = activeItem.name,
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .clip(RoundedCornerShape((engine.S * 0.26).dp))
                             )
                         }
-                    } else {
-                        // API29/30: draw only a local path, never a filtered/full-screen rectangle.
-                        Canvas(modifier = Modifier.fillMaxSize()) {
-                            drawFallbackBridge(
-                                cardCenter = Offset(currentX, currentY),
-                                cardRadius = with(density) { 46.dp.toPx() } * dragController.animScale.value,
-                                maxDistance = with(density) { 150.dp.toPx() },
-                                color = PlatinumPrimary.copy(alpha = 0.95f),
-                                path = fallbackPath, paint = fallbackPaint
-                            )
+                        AuraMediaType.VIDEO -> {
+                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Default.Videocam,
+                                    contentDescription = null,
+                                    tint = PlatinumPrimary,
+                                    modifier = Modifier.size(38.dp)
+                                )
+                            }
+                        }
+                        AuraMediaType.FILE -> {
+                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = Icons.Default.Description,
+                                    contentDescription = null,
+                                    tint = PlatinumPrimary,
+                                    modifier = Modifier.size(38.dp)
+                                )
+                            }
                         }
                     }
 
-                    // Absolute Floating Draggable Card
-                    val cardSize = 92.dp
-                    val halfSizePx = with(density) { 46.dp.toPx() }
-
+                    // Floating upward arrow pill indicator
                     Box(
                         modifier = Modifier
-                            .offset {
-                                IntOffset(
-                                    (currentX - halfSizePx).roundToInt(),
-                                    (currentY - halfSizePx).roundToInt()
-                                )
-                            }
-                            .size(cardSize)
-                            .scale(dragController.animScale.value)
-                            .alpha(dragController.animAlpha.value)
-                            .clip(RoundedCornerShape(26.dp))
-                            .background(MatteSurfaceElevated)
-                            .border(
-                                width = if (dragController.isAttracted) 2.dp else 1.dp,
-                                color = if (dragController.isAttracted) PlatinumPrimary else MatteBorder,
-                                shape = RoundedCornerShape(26.dp)
-                            ),
+                            .align(Alignment.TopEnd)
+                            .padding(6.dp)
+                            .size(22.dp)
+                            .clip(CircleShape)
+                            .background(PlatinumPrimary),
                         contentAlignment = Alignment.Center
                     ) {
-                        when (activeItem.mediaType) {
-                            AuraMediaType.IMAGE -> {
-                                AsyncImage(
-                                    model = ImageRequest.Builder(LocalContext.current)
-                                        .data(activeItem.uri)
-                                        .crossfade(true)
-                                        .build(),
-                                    contentDescription = activeItem.name,
-                                    contentScale = ContentScale.Crop,
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .clip(RoundedCornerShape(26.dp))
-                                )
-                            }
-                            AuraMediaType.VIDEO -> {
-                                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                    Icon(
-                                        imageVector = Icons.Default.Videocam,
-                                        contentDescription = null,
-                                        tint = PlatinumPrimary,
-                                        modifier = Modifier.size(38.dp)
-                                    )
-                                }
-                            }
-                            AuraMediaType.FILE -> {
-                                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                    Icon(
-                                        imageVector = Icons.Default.Description,
-                                        contentDescription = null,
-                                        tint = PlatinumPrimary,
-                                        modifier = Modifier.size(38.dp)
-                                    )
-                                }
-                            }
-                        }
-
-                        // Floating upward arrow pill indicator
-                        Box(
-                            modifier = Modifier
-                                .align(Alignment.TopEnd)
-                                .padding(6.dp)
-                                .size(22.dp)
-                                .clip(CircleShape)
-                                .background(PlatinumPrimary),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.ArrowUpward,
-                                contentDescription = null,
-                                tint = MatteSurfaceElevated,
-                                modifier = Modifier.size(14.dp)
-                            )
-                        }
+                        Icon(
+                            imageVector = Icons.Default.ArrowUpward,
+                            contentDescription = null,
+                            tint = MatteSurfaceElevated,
+                            modifier = Modifier.size(14.dp)
+                        )
                     }
                 }
             }
         }
     }
 }
-
-private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawFallbackBridge(
-    cardCenter: Offset,
-    cardRadius: Float,
-    maxDistance: Float,
-    color: Color,
-    path: NativePath,
-    paint: Paint
-) {
-    val geometry = fallbackBridgeGeometry(cardCenter.x, cardCenter.y, cardRadius, maxDistance, size.width / 2f) ?: return
-    val verticalSpan = (geometry.cardY - geometry.anchorY).coerceAtLeast(1f)
-    val controlY = geometry.anchorY + verticalSpan * 0.48f
-    path.reset()
-    path.apply {
-        moveTo(geometry.anchorX - geometry.anchorHalfWidth, geometry.anchorY)
-        cubicTo(
-            geometry.anchorX - geometry.anchorHalfWidth * 1.15f, controlY * 0.42f,
-            geometry.cardX - geometry.cardHalfWidth * 1.28f, controlY,
-            geometry.cardX - geometry.cardHalfWidth, geometry.cardY
-        )
-        quadTo(
-            geometry.cardX, geometry.cardY + geometry.cardHalfWidth * 0.18f,
-            geometry.cardX + geometry.cardHalfWidth, geometry.cardY
-        )
-        cubicTo(
-            geometry.cardX + geometry.cardHalfWidth * 1.28f, controlY,
-            geometry.anchorX + geometry.anchorHalfWidth * 1.15f, controlY * 0.42f,
-            geometry.anchorX + geometry.anchorHalfWidth, geometry.anchorY
-        )
-        close()
-    }
-    paint.color = color.toArgb()
-    drawIntoCanvas { canvas -> canvas.nativeCanvas.drawPath(path, paint) }
-}
-
-/**
- * Draws the edge-to-edge liquid attraction layer and the organic metaball bridge
- * connecting the top edge of the device to the floating liquid droplet.
- */
-private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawEdgeLiquidAttraction(
-    dropCenter: Offset,
-    dropRadius: Float,
-    swellFactor: Float,
-    color: Color
-) {
-    val screenWidth = size.width
-    val baseEdgeThickness = 14f // Base edge lip at top of device
-
-    if (swellFactor <= 0.02f) {
-        // Minimal edge boundary
-        drawRect(
-            color = color.copy(alpha = 0.2f),
-            topLeft = Offset.Zero,
-            size = androidx.compose.ui.geometry.Size(screenWidth, baseEdgeThickness)
-        )
-        return
-    }
-
-    val swellWidth = (140f + swellFactor * 260f).coerceAtMost(screenWidth * 0.9f)
-    val swellDepth = baseEdgeThickness + (swellFactor * 130f)
-    val swellCenterX = dropCenter.x.coerceIn(swellWidth / 2f, screenWidth - swellWidth / 2f)
-
-    val topPath = Path().apply {
-        moveTo(0f, 0f)
-        lineTo(screenWidth, 0f)
-        lineTo(screenWidth, baseEdgeThickness)
-
-        val rightSwellX = (swellCenterX + swellWidth / 2f).coerceAtMost(screenWidth)
-        lineTo(rightSwellX, baseEdgeThickness)
-
-        val leftSwellX = (swellCenterX - swellWidth / 2f).coerceAtLeast(0f)
-
-        // Cubic bezier creating organic liquid droplet swell from the screen edge
-        cubicTo(
-            rightSwellX - (swellWidth * 0.25f), baseEdgeThickness,
-            swellCenterX + (swellWidth * 0.2f), swellDepth,
-            swellCenterX, swellDepth
-        )
-        cubicTo(
-            swellCenterX - (swellWidth * 0.2f), swellDepth,
-            leftSwellX + (swellWidth * 0.25f), baseEdgeThickness,
-            leftSwellX, baseEdgeThickness
-        )
-
-        lineTo(0f, baseEdgeThickness)
-        close()
-    }
-
-    drawPath(path = topPath, color = color)
-
-    // Liquid Metaball Bridge connecting top swell directly into the drop
-    val distanceToSwell = dropCenter.y - swellDepth
-    if (distanceToSwell < (dropRadius * 2.8f) && distanceToSwell > -dropRadius) {
-        val bridgeWidthSwell = (dropRadius * 1.4f * swellFactor).coerceAtLeast(20f)
-        val bridgeWidthDrop = dropRadius * 0.9f
-
-        val bridgePath = Path().apply {
-            val pTopLeft = Offset(swellCenterX - bridgeWidthSwell, swellDepth * 0.85f)
-            val pTopRight = Offset(swellCenterX + bridgeWidthSwell, swellDepth * 0.85f)
-            val pBottomLeft = Offset(dropCenter.x - bridgeWidthDrop, dropCenter.y)
-            val pBottomRight = Offset(dropCenter.x + bridgeWidthDrop, dropCenter.y)
-
-            val midY = (swellDepth + dropCenter.y) / 2f
-            val pinch = 0.55f
-
-            moveTo(pTopLeft.x, pTopLeft.y)
-            quadraticTo(
-                pTopLeft.x + (pBottomLeft.x - pTopLeft.x) * pinch, midY,
-                pBottomLeft.x, pBottomLeft.y
-            )
-            lineTo(pBottomRight.x, pBottomRight.y)
-            quadraticTo(
-                pTopRight.x + (pBottomRight.x - pTopRight.x) * pinch, midY,
-                pTopRight.x, pTopRight.y
-            )
-            close()
-        }
-        drawPath(path = bridgePath, color = color)
-    }
 }

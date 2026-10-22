@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>محاكاة الذوبان السائل من الحواف</title>
+<style>
+/* ================= لوحة Apple Dark Mode ================= */
+:root{
+  --bg:#000000;                          /* خلفية الصفحة */
+  --card:#1C1C1E;                        /* البطاقات والكبسولات */
+  --menu:#2C2C2E;                        /* القوائم والمدخلات والتبويب النشط */
+  --ink:#F5F5F5;                         /* النص الرئيسي والأيقونات */
+  --muted:#8E8E93;                       /* النص الثانوي */
+  --line:rgba(255,255,255,.08);          /* حدود الكبسولات والبطاقات */
+  --line-focus:rgba(255,255,255,.12);    /* حدود القوائم والمدخلات المركّزة */
+  --shadow:0 4px 30px rgba(0,0,0,.4),0 1px 3px rgba(0,0,0,.6);
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--muted);overflow:hidden;overflow:clip;
+  overscroll-behavior:none;-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;
+  font-family:-apple-system,"SF Pro Text",system-ui,"Segoe UI",Tahoma,"Noto Sans Arabic",sans-serif}
+#stage{position:fixed;inset:0;overflow:hidden;overflow:clip;direction:ltr;touch-action:none;background:var(--bg)}
+
+/* ================= الهالة: مخفية تماماً في الراحة، تلاشٍ متدرّج بلا خط نهاية ================= */
+.fe-glow{position:absolute;display:none;opacity:0;pointer-events:none;mix-blend-mode:screen;will-change:opacity}
+.fe-glow::before{content:"";position:absolute}
+.fe-glow::after{content:"";position:absolute;inset:0;background:var(--fe-noise);opacity:.45;
+  -webkit-mask-image:var(--m);mask-image:var(--m)}
+.fe-glow.t{left:0;top:0;width:100%;height:var(--d);background:var(--g)}
+.fe-glow.l{left:0;top:0;height:100%;width:var(--d);background:var(--g)}
+.fe-glow.r{right:0;top:0;height:100%;width:var(--d);background:var(--g)}
+.fe-glow.t::before{left:0;right:0;top:0;height:1px;background:var(--rim)}
+.fe-glow.l::before{left:0;top:0;bottom:0;width:1px;background:var(--rim)}
+.fe-glow.r::before{right:0;top:0;bottom:0;width:1px;background:var(--rim)}
+
+/* ================= طبقة السائل (Metaballs): طبقة لكل حافة ================= */
+.fe-liq{position:absolute;left:-150px;top:-150px;right:-150px;bottom:-150px;display:none;opacity:0;
+  pointer-events:none;filter:url(#fe-morph);will-change:opacity}
+.fe-liq i{position:absolute;display:block;will-change:transform}
+.fe-liq .gh{left:0;top:0;border-radius:26%;background:linear-gradient(180deg,var(--menu),var(--card))}
+.fe-liq.t .bar{left:0;right:0;top:30px;background:linear-gradient(to bottom,#F5F5F5 0%,#E4E4E7 34%,#8E8E93 56%,#3A3A3C 72%,#2C2C2E 80%,#1C1C1E 90%,#000000 100%)}
+.fe-liq.l .bar{top:0;bottom:0;left:30px;background:linear-gradient(to right,#F5F5F5 0%,#E4E4E7 34%,#8E8E93 56%,#3A3A3C 72%,#2C2C2E 80%,#1C1C1E 90%,#000000 100%)}
+.fe-liq.r .bar{top:0;bottom:0;right:30px;background:linear-gradient(to left,#F5F5F5 0%,#E4E4E7 34%,#8E8E93 56%,#3A3A3C 72%,#2C2C2E 80%,#1C1C1E 90%,#000000 100%)}
+.fe-liq.t .drip{top:30px;border-radius:0 0 80px 80px;background:linear-gradient(to bottom,#F5F5F5 0%,#8E8E93 60%,#2C2C2E 100%)}
+.fe-liq.l .drip{left:30px;border-radius:0 80px 80px 0;background:linear-gradient(to right,#F5F5F5 0%,#8E8E93 60%,#2C2C2E 100%)}
+.fe-liq.r .drip{right:30px;border-radius:80px 0 0 80px;background:linear-gradient(to left,#F5F5F5 0%,#8E8E93 60%,#2C2C2E 100%)}
+
+/* ================= موجة الالتحام (على طريقة NameDrop) ================= */
+.fe-wave{position:absolute;display:none;pointer-events:none;border-radius:50%;mix-blend-mode:screen;
+  background:radial-gradient(circle closest-side,rgba(245,245,245,0) 60%,rgba(245,245,245,.06) 72%,rgba(245,245,245,.26) 84%,rgba(245,245,245,.5) 91%,rgba(245,245,245,.16) 97%,rgba(245,245,245,0) 100%)}
+
+/* ================= البطاقة ================= */
+#card{position:absolute;left:0;top:0;border-radius:26%;background:var(--card);border:.5px solid var(--line);
+  box-shadow:var(--shadow),inset 0 1px 0 rgba(255,255,255,.08);cursor:grab;touch-action:none;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:.9em;direction:rtl;
+  will-change:transform,opacity}
+#card.drag{cursor:grabbing;border-color:var(--line-focus)}
+#card::after{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;
+  background:linear-gradient(180deg,rgba(255,255,255,.07),transparent 30%)}
+#card .ico{width:4.4em;height:5.4em;border-radius:.9em;background:var(--menu);border:.5px solid var(--line-focus);position:relative}
+#card .ico::after{content:"";position:absolute;left:.9em;right:.9em;top:1.9em;height:2px;border-radius:2px;
+  background:var(--muted);box-shadow:0 .7em 0 var(--muted),0 1.4em 0 var(--muted)}
+#card .nm{font-size:1.05em;font-weight:600;color:var(--ink);max-width:88%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#card .sz{font-size:.9em;color:var(--muted);margin-top:-.5em;direction:ltr}
+
+/* ================= عناصر الواجهة ================= */
+#hint{position:fixed;left:0;right:0;bottom:0;padding:0 24px calc(22px + env(safe-area-inset-bottom,0px));
+  text-align:center;font-size:15px;line-height:1.7;pointer-events:none;color:var(--muted)}
+#reset{position:fixed;top:calc(18px + env(safe-area-inset-top,0px));left:18px;z-index:5;display:none;
+  font:inherit;font-size:14px;font-weight:600;color:#000000;background:var(--ink);border:0;border-radius:999px;
+  padding:8px 18px;cursor:pointer;box-shadow:var(--shadow)}
+#reset:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
+</style>
+</head>
+<body>
+
+<div id="stage">
+  <div id="card" role="button" aria-label="البطاقة القابلة للسحب">
+    <div class="ico"></div>
+    <div class="nm">تقرير_المشروع.pdf</div>
+    <div class="sz">2.4 MB</div>
+  </div>
+</div>
+<button id="reset" type="button">إعادة البطاقة</button>
+<div id="hint">أمسك البطاقة وخذها نحو الأعلى أو اليمين أو اليسار. إن تركتها قبل نقطة الالتحام عادت لمكانها.</div>
+
+<script>
+"use strict";
+/* =====================================================================
+   FluidEdgeDissolve — وحدة مستقلة قابلة للدمج
+   الاستخدام:
+     const fx = createFluidEdge({ stage, card, config:{ onAbsorb(edge){...} } });
+     fx.reset();    // إعادة البطاقة
+     fx.destroy();  // إزالة كل شيء
+   ===================================================================== */
+function createFluidEdge(opts){
+  const stage = opts.stage, card = opts.card;
+  const CFG = Object.assign({
+    zone: 190,            // أقصى نطاق إحساس بالحافة (px)
+    commitRatio: .44,     // نقطة اللاعودة كنسبة من نطاق الحافة
+    uncommitRatio: .58,   // هامش الخروج منها (hysteresis)
+    look: .12,            // استشراف النية: ثانية من السرعة تُضاف لاتجاه البطاقة
+    project: .499,        // إسقاط الزخم عند آبل: rate/(1-rate)/1000 مع rate=0.998
+    flickSpeed: 500,      // أقل سرعة تُعدّ قذفة (px/s)
+    respawnDelay: 1400,   // مدة الغياب قبل عودة البطاقة (ms)
+    onAbsorb: null,       // (edgeName) عند ابتلاع البطاقة
+    onGone: null,         // عند اختفائها كلياً
+    onRespawn: null       // عند عودتها
+  }, opts.config || {});
+
+  /* الحواف: أعلى / يسار / يمين فقط — لا حافة سفلية عن قصد */
+  const EDGES = [
+    {name:"top",   cls:"t", n:[0,-1], ang:"90deg"},
+    {name:"left",  cls:"l", n:[-1,0], ang:"180deg"},
+    {name:"right", cls:"r", n:[1,0],  ang:"180deg"}
+  ];
+  const N = EDGES.length, O = 150;      // O: إزاحة طبقة السائل خارج الشاشة
+  const RM = !!(window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches);
+
+  /* ---------- أدوات ---------- */
+  const clamp = (v,a=0,b=1) => v<a?a:v>b?b:v;
+  const lin   = (a,b,x) => clamp((x-a)/(b-a));
+  const ss    = x => { x=clamp(x); return x*x*(3-2*x); };
+  const lerp  = (a,b,t) => a+(b-a)*t;
+  const rubber= (v,lo,hi) => v<lo ? lo+(v-lo)*.3 : v>hi ? hi+(v-hi)*.3 : v;   // مقاومة الحدود
+  const buzz  = () => { try{ if(navigator.vibrate) navigator.vibrate(8); }catch(e){} };
+
+  /* نابض بأسلوب آبل: (response بالثواني، dampingRatio) -> k=(2π/r)²، c=4πζ/r */
+  class Spring{
+    constructor(x=0,r=.5,z=1){ this.x=x; this.v=0; this.t=x; this.r=r; this.z=z; }
+    set(x){ this.x=this.t=x; this.v=0; }
+    step(dt){
+      const w=2*Math.PI/this.r, k=w*w, c=4*Math.PI*this.z/this.r;
+      let n=Math.ceil(dt/.008); const h=dt/n;
+      while(n--){ this.v+=(k*(this.t-this.x)-c*this.v)*h; this.x+=this.v*h; }
+    }
+  }
+
+  /* ---------- بناء الطبقات ---------- */
+  const NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(NS,"svg");
+  svg.setAttribute("width","0"); svg.setAttribute("height","0"); svg.setAttribute("aria-hidden","true");
+  svg.style.position="absolute";
+  svg.innerHTML =
+    '<filter id="fe-morph" x="-20%" y="-20%" width="140%" height="140%" color-interpolation-filters="sRGB">'+
+    '<feGaussianBlur in="SourceGraphic" stdDeviation="35" result="blur"/>'+
+    '<feColorMatrix in="blur" type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 60 -30" result="goo"/>'+
+    '<feGaussianBlur in="goo" stdDeviation="14"/></filter>';
+  document.body.prepend(svg);
+
+  /* ضجيج خفيف لكسر تدرّج الـ 8-bit في الألوان الداكنة */
+  {
+    const c=document.createElement("canvas"); c.width=c.height=96;
+    const x=c.getContext("2d"), im=x.createImageData(96,96);
+    for(let i=0;i<im.data.length;i+=4){ im.data[i]=im.data[i+1]=im.data[i+2]=255; im.data[i+3]=Math.random()*14|0; }
+    x.putImageData(im,0,0);
+    stage.style.setProperty("--fe-noise",`url(${c.toDataURL()})`);
+  }
+
+  /* توقفات تدرّج مُلَيَّنة: alpha ~ (1-t)^2.2 تصل للصفر بميل صفري => لا خط نهاية */
+  const PAL = [[245,245,245],[142,142,147],[44,44,46],[28,28,30]];   // F5F5F5 > 8E8E93 > 2C2C2E > 1C1C1E
+  function eased(A,mask){
+    const o=[];
+    for(let i=0;i<=16;i++){
+      const t=i/16, u=t*3, k=Math.min(2,Math.floor(u)), f=u-k,
+            c=PAL[k].map((x,j)=>Math.round(lerp(x,PAL[k+1][j],f))),
+            a=(A*Math.pow(1-t,2.2)).toFixed(4), p=(t*100).toFixed(1)+"%";
+      o.push(mask ? `rgba(0,0,0,${a}) ${p}` : `rgba(${c[0]},${c[1]},${c[2]},${a}) ${p}`);
+    }
+    return o.join(",");
+  }
+  const SHAPE = [
+    "ellipse 62% 100% at var(--f) 0%",
+    "ellipse 100% 62% at 0% var(--f)",
+    "ellipse 100% 62% at 100% var(--f)"
+  ];
+  const RIM = "linear-gradient(var(--ra),transparent calc(var(--f) - 36%),rgba(245,245,245,.08) calc(var(--f) - 24%),"+
+              "rgba(245,245,245,.3) calc(var(--f) - 11%),rgba(245,245,245,.65) var(--f),rgba(245,245,245,.3) calc(var(--f) + 11%),"+
+              "rgba(245,245,245,.08) calc(var(--f) + 24%),transparent calc(var(--f) + 36%))";
+
+  const fx = EDGES.map((E,i)=>{
+    const liq=document.createElement("div"); liq.className="fe-liq "+E.cls;
+    const bar=document.createElement("i"), drip=document.createElement("i"), gh=document.createElement("i");
+    bar.className="bar"; drip.className="drip"; gh.className="gh";
+    liq.append(bar,drip,gh);
+    return {E,liq,bar,drip,gh,glow:null,
+            vis:new Spring(0,.34,1),            // ظهور/اختفاء ناعم
+            foc:new Spring(.5,.3,1)};           // نقطة التركيز على امتداد الحافة
+  });
+  fx.forEach(f=>stage.insertBefore(f.liq,card));
+  fx.forEach((f,i)=>{                           // الهالة فوق السائل بوضع screen: تضيف ضوءاً ولا تُظهر أي حد
+    const g=document.createElement("div"); g.className="fe-glow "+f.E.cls;
+    g.style.setProperty("--g",`radial-gradient(${SHAPE[i]},${eased(.62)})`);
+    g.style.setProperty("--m",`radial-gradient(${SHAPE[i]},${eased(1,true)})`);
+    g.style.setProperty("--ra",f.E.ang);
+    g.style.setProperty("--rim",RIM);
+    f.glow=g; stage.insertBefore(g,card);
+  });
+  const wave=document.createElement("div"); wave.className="fe-wave"; stage.insertBefore(wave,card);
+
+  /* ---------- الحالة ---------- */
+  const X=new Spring(0,.5,1), Y=new Spring(0,.5,1), Sc=new Spring(1,.5,1), Lf=new Spring(0,.3,.9);
+  let W=0,H=0,S=140,hx=0,hy=0,zone=[];
+  let mode="return";                 // drag | return | abs | gone
+  let edge=0,active=-1,focus=0,commit=false,cm=0,pulsed=false;
+  let respawnTimer=0,raf=0,alive=true,last=performance.now(),goneShown=false;
+  const drag={id:null,ox:0,oy:0,samples:[]};
+  const wv={t:1,x:0,y:0,amp:1};
+
+  function resize(){
+    W=stage.clientWidth||innerWidth; H=stage.clientHeight||innerHeight;
+    S=Math.round(clamp(Math.min(W,H)*.34,104,160));
+    card.style.width=card.style.height=S+"px";
+    card.style.fontSize=Math.max(9,S*.09)+"px";
+    fx.forEach(f=>{ f.gh.style.width=f.gh.style.height=S+"px"; });
+    hx=(W-S)/2; hy=(H-S)/2;
+    /* نطاق كل حافة لا يتجاوز 78% من بُعد البطاقة عنها وهي في مكانها => لا تأثير أبداً في الراحة */
+    zone=[hy,hx,hx].map(h=>{ const R=Math.min(CFG.zone,h*.78); return {R:R,C:R*CFG.commitRatio,U:R*CFG.uncommitRatio}; });
+  }
+
+  /* ---------- الحساسات ---------- */
+  function geom(){
+    const h=S*Math.max(0,Sc.x)/2, cx=X.x+S/2, cy=Y.x+S/2;
+    const d=[cy-h, cx-h, W-(cx+h)];              // بُعد أقرب جانب من البطاقة عن كل حافة
+    return {d:d, p:d.map((v,i)=>clamp(1-v/zone[i].R)), cx:cx, cy:cy};
+  }
+  function vel(){
+    const a=drag.samples, n=a.length;
+    if(n<2) return [0,0];
+    const f=a[0], l=a[n-1], dt=(l.t-f.t)/1000;
+    if(dt<.008 || performance.now()-l.t>90) return [0,0];
+    return [(l.x-f.x)/dt,(l.y-f.y)/dt];
+  }
+
+  /* الذكاء: حافة واحدة فقط، تُحدَّد من (إزاحة البطاقة عن مكانها + سرعتها) × القرب، مع ثبات يمنع التبديل العشوائي */
+  function sense(dt){
+    const q=geom(), t=[0,0,0];
+    if(mode==="drag"){
+      const v=vel(),
+            wx=(X.x-hx)+CFG.look*v[0], wy=(Y.x-hy)+CFG.look*v[1], mag=Math.hypot(wx,wy);
+      const dir=[0,0,0], sc=[0,0,0]; let best=-1, bs=0;
+      for(let i=0;i<N;i++){
+        const n=EDGES[i].n;
+        dir[i]= mag<24 ? 0 : lin(.5,.88,(wx*n[0]+wy*n[1])/mag);
+        sc[i]=q.p[i]*dir[i];
+        if(sc[i]>bs){ bs=sc[i]; best=i; }
+      }
+      let a=active;
+      if(a>=0 && sc[a]>.01){ if(best!==a && sc[best]>sc[a]*1.4) a=best; }
+      else a = bs>.02 ? best : -1;
+      active=a;
+      if(a>=0){
+        focus=a; t[a]=ss(q.p[a])*dir[a];
+        if(!commit && q.d[a]<zone[a].C && dir[a]>.6){ commit=true; buzz(); ripple(a,.8); }      // نقطة اللاعودة
+        else if(commit && (q.d[a]>zone[a].U || dir[a]<.4)) commit=false;
+      } else commit=false;
+    } else if(mode==="abs"){ t[edge]=1; focus=edge; }
+    else { active=-1; commit=false; }
+
+    cm += (((mode==="abs"||commit)?1:0)-cm)*(1-Math.exp(-dt*10));
+    for(let i=0;i<N;i++){
+      const f=fx[i];
+      f.vis.t=t[i];
+      f.vis.r = t[i]>f.vis.x ? .34 : (mode==="gone" ? .75 : .6);   // ظهور أسرع قليلاً، واختفاء أبطأ وأنعم
+      f.vis.step(dt);
+      if(f.vis.x<0){ f.vis.x=0; f.vis.v=0; }
+      if(t[i]===0 && f.vis.x<.0015){ f.vis.x=0; f.vis.v=0; }
+      if(i===active || (mode==="abs" && i===edge)) f.foc.t=clamp(i===0?q.cx/W:q.cy/H,.1,.9);
+      f.foc.step(dt);
+    }
+  }
+
+  /* ---------- موجة الالتحام ---------- */
+  function ripple(e,amp){
+    if(RM) return;
+    const q=geom();
+    wv.t=0; wv.amp=amp; wv.x= e===0 ? q.cx : e===1 ? 0 : W; wv.y= e===0 ? 0 : q.cy;
+  }
+
+  /* ---------- الرسم ---------- */
+  function placeCard(){
+    const sv=clamp(fx[focus].vis.x), k=RM?0:.12*sv*(.35+.65*cm);       // تمدّد البطاقة باتجاه السحب
+    const sx=focus===0?1-k*.5:1+k, sy=focus===0?1+k:1-k*.5, s=Math.max(0,Sc.x)*(1+.04*Lf.x);
+    card.style.transform=`translate(${X.x}px,${Y.x}px) scale(${s*sx},${s*sy})`;
+    const tg=`translate(${X.x+O}px,${Y.x+O}px) scale(${s*sx},${s*sy})`;
+    for(let i=0;i<N;i++) fx[i].gh.style.transform=tg;
+  }
+  function render(dt){
+    const q=geom(); let mx=0;
+    for(let i=0;i<N;i++){
+      const f=fx[i], v=clamp(f.vis.x), c=i===focus?cm:0, L=i===0?W:H;
+      if(v>mx) mx=v;
+
+      /* الهالة */
+      const gOn=v>.003;
+      f.glow.style.display=gOn?"block":"none";
+      if(gOn){
+        const D=clamp(.2*L,150,340)*(.6+.4*v)*(1+.25*c);
+        f.glow.style.opacity=Math.min(1,ss(v)*(1+.3*c)).toFixed(3);
+        f.glow.style.setProperty("--d",D.toFixed(1)+"px");
+        f.glow.style.setProperty("--f",(f.foc.x*100).toFixed(2)+"%");
+      }
+
+      /* السائل: شفة على كامل طول الحافة + عنق يمتد نحو البطاقة */
+      const lv=ss(v*1.25), lOn=lv>.004;
+      f.liq.style.display=lOn?"block":"none";
+      if(lOn){
+        f.liq.style.opacity=lv.toFixed(3);
+        const vd=Math.pow(v,.6), dw=S*(.28+.5*v+.1*c), sz=150+190*Math.pow(v,.8)+40*c,
+              near=Math.max(0,q.d[i]+S*Math.max(0,Sc.x)*.4), len=(120+near)*vd;
+        if(i===0){
+          f.bar.style.height=sz+"px";
+          f.drip.style.width=dw+"px"; f.drip.style.height=len+"px"; f.drip.style.left=(q.cx-dw/2+O)+"px";
+        } else {
+          f.bar.style.width=sz+"px";
+          f.drip.style.height=dw+"px"; f.drip.style.width=len+"px"; f.drip.style.top=(q.cy-dw/2+O)+"px";
+        }
+      }
+    }
+
+    /* الموجة */
+    if(wv.t<1){
+      wv.t=Math.min(1,wv.t+dt/.95);
+      const r=lerp(40,340,1-Math.pow(1-wv.t,3)), ws=wave.style;
+      ws.display="block"; ws.width=ws.height=(r*2)+"px"; ws.left=(wv.x-r)+"px"; ws.top=(wv.y-r)+"px";
+      ws.opacity=(wv.amp*Math.pow(1-wv.t,1.7)*.6).toFixed(3);
+    } else if(wave.style.display!=="none") wave.style.display="none";
+
+    /* البطاقة */
+    if(mode==="gone"){ card.style.visibility="hidden"; return; }
+    card.style.visibility="visible";
+    placeCard();
+    card.style.opacity=((1-.8*mx)*Math.min(1,Math.max(0,Sc.x)*1.6)).toFixed(3);
+  }
+
+  /* ---------- الفيزياء ---------- */
+  function step(dt){
+    Lf.step(dt);
+    if(mode==="gone") return;
+    if(mode==="drag"){ Sc.t=1; Sc.step(dt); return; }              // X و Y تتبعان الإصبع مباشرة
+    if(mode==="return"){ X.t=hx; Y.t=hy; Sc.t=1; X.step(dt); Y.step(dt); Sc.step(dt); return; }
+    /* abs: نابض نحو الحافة + سحق تدريجي */
+    if(edge===0){ X.v*=Math.exp(-4*dt); X.x+=X.v*dt; Y.step(dt); }
+    else        { Y.v*=Math.exp(-4*dt); Y.x+=Y.v*dt; X.step(dt); }
+    const dn=[Y.x,X.x,W-X.x-S][edge];
+    Sc.t = dn<90 ? 0 : 1; Sc.step(dt);
+    if(!pulsed && Sc.x<.45){ pulsed=true; ripple(edge,.9); }        // نبضة البلع
+    if(Sc.x<.02 && Sc.t===0) gone();
+  }
+  function gone(){
+    mode="gone"; Sc.set(0);
+    if(CFG.onAbsorb) CFG.onAbsorb(EDGES[edge].name);
+    if(CFG.onGone) CFG.onGone();
+    clearTimeout(respawnTimer); respawnTimer=setTimeout(reset,CFG.respawnDelay);
+  }
+  function reset(){
+    clearTimeout(respawnTimer);
+    drag.id=null; card.classList.remove("drag");
+    active=-1; commit=false; cm=0; pulsed=false; wv.t=1;
+    fx.forEach(f=>{ f.vis.set(0); f.foc.set(.5); });
+    X.r=Y.r=.5; X.z=Y.z=1; Sc.r=.5; Sc.z=1;
+    X.set(hx); Y.set(hy); Sc.set(0); Sc.t=1; Lf.set(0);
+    mode="return";
+    if(CFG.onRespawn) CFG.onRespawn();
+  }
+  function absorb(e,v){
+    if(!commit) ripple(e,.7);
+    mode="abs"; edge=e; focus=e; commit=true; pulsed=false;
+    if(e===0) Y.t=-S*.6; else X.t = e===1 ? -S*.6 : W-S*.4;
+    X.r=Y.r=.42; X.z=Y.z=1; X.v=v[0]; Y.v=v[1];                     // تسليم سرعة اليد للنابض
+    Sc.r=.42; Sc.z=1; Sc.t=1;
+  }
+  function giveBack(v){
+    mode="return"; commit=false;
+    const sp=Math.hypot(v[0],v[1]);
+    X.r=Y.r=.5; X.z=Y.z=lerp(1,.82,ss(lin(250,1600,sp)));           // ارتداد خفيف فقط إذا حملت اليد زخماً
+    X.v=v[0]; Y.v=v[1]; Sc.r=.45; Sc.z=1;
+  }
+
+  /* ---------- السحب: تتبّع 1:1 داخل الحدث نفسه، وقابل للمقاطعة ---------- */
+  const local=ev=>{ const r=stage.getBoundingClientRect(); return [ev.clientX-r.left, ev.clientY-r.top]; };
+  function onDown(ev){
+    if(mode==="abs"||mode==="gone") return;
+    const p=local(ev);
+    drag.id=ev.pointerId; card.setPointerCapture(ev.pointerId);
+    drag.ox=p[0]-X.x; drag.oy=p[1]-Y.x;
+    drag.samples=[{t:performance.now(),x:p[0],y:p[1]}];
+    mode="drag"; X.v=Y.v=0; Lf.t=1; card.classList.add("drag"); ev.preventDefault();
+  }
+  function onMove(ev){
+    if(ev.pointerId!==drag.id) return;
+    const p=local(ev), n=performance.now(), a=drag.samples;
+    X.x=rubber(p[0]-drag.ox,-S*.15,W-S+S*.15);
+    Y.x=rubber(p[1]-drag.oy,-S*.15,H-S);
+    a.push({t:n,x:p[0],y:p[1]});
+    while(a.length>2 && n-a[0].t>110) a.shift();
+    placeCard();
+  }
+  function onUp(ev){
+    if(ev.pointerId!==drag.id) return;
+    drag.id=null; card.classList.remove("drag"); Lf.t=0;
+    const v=vel(), q=geom(); let best=-1, bv=-1e9;
+    for(let i=0;i<N;i++){
+      const n=EDGES[i].n, vn=v[0]*n[0]+v[1]*n[1];
+      const held = i===active && commit && vn>-300;                                   // بلغت نقطة اللاعودة ولم تتراجع
+      const flick= vn>CFG.flickSpeed && q.p[i]>.15 && q.d[i]-vn*CFG.project<30;      // قذفة تسقط نهايتها عند الحافة
+      if(held||flick){ const s=(held?1e4:0)+vn; if(s>bv){ bv=s; best=i; } }
+    }
+    drag.samples=[];
+    if(best>=0) absorb(best,v); else giveBack(v);
+  }
+  card.addEventListener("pointerdown",onDown);
+  card.addEventListener("pointermove",onMove);
+  card.addEventListener("pointerup",onUp);
+  card.addEventListener("pointercancel",onUp);
+
+  /* ---------- الحلقة الرئيسية ---------- */
+  function frame(now){
+    if(!alive) return;
+    raf=requestAnimationFrame(frame);
+    const dt=Math.min(.033,(now-last)/1000||.016); last=now;
+    step(dt); sense(dt); render(dt);
+  }
+  const ro = window.ResizeObserver ? new ResizeObserver(resize) : null;
+  if(ro) ro.observe(stage); else addEventListener("resize",resize);
+  resize(); reset();
+  raf=requestAnimationFrame(t=>{ last=t; frame(t); });
+
+  return {
+    reset:reset,
+    get mode(){ return mode; },
+    destroy(){
+      alive=false; cancelAnimationFrame(raf); clearTimeout(respawnTimer);
+      card.removeEventListener("pointerdown",onDown); card.removeEventListener("pointermove",onMove);
+      card.removeEventListener("pointerup",onUp); card.removeEventListener("pointercancel",onUp);
+      if(ro) ro.disconnect(); else removeEventListener("resize",resize);
+      fx.forEach(f=>{ f.liq.remove(); f.glow.remove(); }); wave.remove(); svg.remove();
+    }
+  };
+}
+
+/* ---------- تشغيل العرض التجريبي ---------- */
+(function(){
+  const btn=document.getElementById("reset");
+  const fx=createFluidEdge({
+    stage:document.getElementById("stage"),
+    card:document.getElementById("card"),
+    config:{
+      onGone:()=>{ btn.style.display="inline-block"; },
+      onRespawn:()=>{ btn.style.display="none"; }
+      /* onAbsorb:(edge)=>{ ... نفّذ هنا منطق التطبيق: أرشفة/حذف/إرسال ... } */
+    }
+  });
+  btn.addEventListener("click",()=>fx.reset());
+  window.fluidEdge=fx;
+})();
+</script>
+</body>
+</html>
