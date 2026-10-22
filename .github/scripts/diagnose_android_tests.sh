@@ -36,7 +36,7 @@ GRADLE
 watchdog=$!
 trap 'kill "$watchdog" 2>/dev/null || true' EXIT
 # Fail before the job deadline so reports and dumps are always uploaded.
-timeout --signal=TERM --kill-after=20s 420s gradle --no-daemon --stacktrace --console=plain \
+timeout --signal=TERM --kill-after=20s 420s gradle --no-daemon --no-configuration-cache --info --stacktrace --console=plain \
   --init-script "$RUNNER_TEMP/test-trace.init.gradle" testDebugUnitTest \
   --tests 'com.example.TransferAnnounceTest' \
   --tests 'com.example.StreamingTransferRegressionTest'

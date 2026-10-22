@@ -120,16 +120,17 @@ class TransferAnnounceTest {
             server.enqueue(completed(payload))
             val started = System.nanoTime()
             var success = false
+            var error: String? = null
             StreamingTransferManager(app).sendFile(
                 item = item("fallback.bin", payload, "application/octet-stream"),
                 host = server.hostName,
                 port = server.port
-            ) { ok, _ -> success = ok }
+            ) { ok, message -> success = ok; error = message }
             val elapsedMs = (System.nanoTime() - started) / 1_000_000
-            println("Announcement fallback ${announceResponse.status}: total announce+upload ${elapsedMs}ms")
+            println("Announcement fallback ${announceResponse.status}: total announce+upload ${elapsedMs}ms, success=$success, error=$error, requests=${server.requestCount}")
             assertTrue("failure must not block transfer excessively: ${elapsedMs}ms", elapsedMs < 3500)
-            assertEquals("/api/transfer/announce", server.takeRequest().path)
-            assertEquals("/upload", server.takeRequest().path)
+            assertEquals("/api/transfer/announce", server.takeRequest(5, java.util.concurrent.TimeUnit.SECONDS)?.path)
+            assertEquals("Missing upload: success=$success, error=$error, requests=${server.requestCount}", "/upload", server.takeRequest(5, java.util.concurrent.TimeUnit.SECONDS)?.path)
             assertTrue(success)
         }
     }
