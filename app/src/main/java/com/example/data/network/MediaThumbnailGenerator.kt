@@ -172,8 +172,8 @@ class MediaThumbnailGenerator private constructor(private val source: ThumbnailS
 
         private fun corrected(uri: Uri, bitmap: Bitmap): Bitmap {
             val orientation = try {
-                resolver.openFileDescriptor(uri, "r")?.use { pfd ->
-                    android.media.ExifInterface(pfd.fileDescriptor).getAttributeInt(
+                resolver.openInputStream(uri)?.use { input ->
+                    android.media.ExifInterface(input).getAttributeInt(
                         android.media.ExifInterface.TAG_ORIENTATION,
                         android.media.ExifInterface.ORIENTATION_NORMAL)
                 } ?: android.media.ExifInterface.ORIENTATION_NORMAL
