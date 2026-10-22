@@ -109,7 +109,8 @@ internal fun fallbackBridgeGeometry(
 class FluidDragController(
     val density: Density,
     val coroutineScope: CoroutineScope,
-    val onSendItem: (MediaItem) -> Unit
+    val onSendItem: (MediaItem) -> Unit,
+    val onSendItemWithDirection: ((MediaItem, String) -> Unit)? = null
 ) {
     var activeItem by mutableStateOf<MediaItem?>(null)
         internal set
@@ -188,12 +189,13 @@ fun Modifier.fluidDraggable(
 
 @Composable
 fun rememberFluidDragController(
-    onSendItem: (MediaItem) -> Unit
+    onSendItem: (MediaItem) -> Unit,
+    onSendItemWithDirection: ((MediaItem, String) -> Unit)? = null
 ): FluidDragController {
     val density = LocalDensity.current
     val coroutineScope = rememberCoroutineScope()
-    return remember(density, coroutineScope, onSendItem) {
-        FluidDragController(density, coroutineScope, onSendItem)
+    return remember(density, coroutineScope, onSendItem, onSendItemWithDirection) {
+        FluidDragController(density, coroutineScope, onSendItem, onSendItemWithDirection)
     }
 }
 
@@ -234,7 +236,8 @@ fun FluidMetaballContainer(
                     val item = dragController.activeItem
                     if (item != null) {
                         coroutineScope.launch(Dispatchers.IO) {
-                            dragController.onSendItem(item)
+                            dragController.onSendItemWithDirection?.invoke(item, edgeName)
+                                ?: dragController.onSendItem(item)
                         }
                     }
                 }

@@ -46,7 +46,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun selectFolder(folder: String) { _uiState.update { it.copy(selectedFolder=folder) } }
     fun pair(peer: NearbyPeer) = discoveryManager.pair(peer) { ok, error -> _uiState.update { it.copy(statusNotification = if (ok) "تم الاقتران بالحاسوب" else "تعذر الاقتران: ${error ?: "مرفوض"}") } }
     fun disconnect(peer: NearbyPeer) { discoveryManager.disconnect(peer) }
-    fun sendItem(item: MediaItem) {
+    fun sendItem(item: MediaItem) = sendItem(item, "top")
+    fun sendItem(item: MediaItem, direction: String) {
         val connected = discoveryManager.nearbyPeers().filter { it.status == PeerStatus.CONNECTED }
         val peer = connected.singleOrNull(); val token = peer?.let { discoveryManager.tokenFor(it) }
         if (peer == null || token.isNullOrBlank()) {
@@ -56,7 +57,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         viewModelScope.launch {
-            transferManager.sendFile(item, peer.host, peer.port, token, useLegacyEndpoint = false) { success, error ->
+            transferManager.sendFile(item, peer.host, peer.port, token, useLegacyEndpoint = false, direction = direction) { success, error ->
                 if (!success && error?.contains("401") == true) discoveryManager.disconnect(peer)
                 _uiState.update { it.copy(statusNotification = if (success)
                     "تم إرسال ${item.name} بنجاح" else error ?: "فشل نقل الملف") }

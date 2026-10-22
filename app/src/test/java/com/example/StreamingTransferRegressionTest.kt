@@ -74,6 +74,15 @@ class StreamingTransferRegressionTest {
         return bytes.joinToString("") { "%02x".format(it) }
     }
 
+    private fun enqueueAnnouncementResponse(code: Int = 200) {
+        server.enqueue(MockResponse().setResponseCode(code).setBody("{}"))
+    }
+
+    private fun takeUploadRequest(): okhttp3.mockwebserver.RecordedRequest {
+        assertEquals("/api/transfer/announce", server.takeRequest().path)
+        return server.takeRequest()
+    }
+
     @Test
     fun `test network error when server offline fails explicitly without fake success`() = runBlocking {
         val transferManager = StreamingTransferManager(app)
@@ -155,6 +164,7 @@ class StreamingTransferRegressionTest {
                 "path": "C:\\AuraShare\\valid_doc.txt"
             }
         """.trimIndent()
+        enqueueAnnouncementResponse()
         server.enqueue(MockResponse().setResponseCode(200).setBody(serverResponseBody))
 
         var callbackSuccess = false
@@ -170,7 +180,7 @@ class StreamingTransferRegressionTest {
             callbackError = error
         }
 
-        val recordedRequest = server.takeRequest()
+        val recordedRequest = takeUploadRequest()
         assertEquals("/upload", recordedRequest.path)
         assertEquals("MY_TOKEN_2026", recordedRequest.getHeader("X-AuraShare-Token"))
         assertEquals(content.length.toString(), recordedRequest.getHeader("X-File-Size"))
@@ -198,6 +208,7 @@ class StreamingTransferRegressionTest {
                 "sha256": "fake_or_corrupted_sha256_hash_value"
             }
         """.trimIndent()
+        enqueueAnnouncementResponse()
         server.enqueue(MockResponse().setResponseCode(200).setBody(serverResponseBody))
 
         var callbackSuccess = true
@@ -231,6 +242,7 @@ class StreamingTransferRegressionTest {
                 "received": ${content.length}
             }
         """.trimIndent()
+        enqueueAnnouncementResponse()
         server.enqueue(MockResponse().setResponseCode(200).setBody(serverResponseBody))
 
         var callbackSuccess = true
@@ -254,6 +266,7 @@ class StreamingTransferRegressionTest {
         val transferManager = StreamingTransferManager(app)
         val item = createTestFile("auth_test.txt", "Hello")
 
+        enqueueAnnouncementResponse()
         server.enqueue(MockResponse().setResponseCode(401).setBody("""{"error":"Unauthorized token"}"""))
 
         var callbackSuccess = true
@@ -279,6 +292,7 @@ class StreamingTransferRegressionTest {
         val transferManager = StreamingTransferManager(app)
         val item = createTestFile("limit_test.txt", "Data")
 
+        enqueueAnnouncementResponse()
         server.enqueue(MockResponse().setResponseCode(423).setBody("""{"error":"Locked"}"""))
 
         var callbackSuccess = true
@@ -310,6 +324,7 @@ class StreamingTransferRegressionTest {
                 "sha256": "$expectedSha256"
             }
         """.trimIndent()
+        enqueueAnnouncementResponse()
         server.enqueue(MockResponse().setResponseCode(200).setBody(serverResponseBody))
 
         var callbackSuccess = false
@@ -322,7 +337,7 @@ class StreamingTransferRegressionTest {
             callbackSuccess = success
         }
 
-        val request = server.takeRequest()
+        val request = takeUploadRequest()
         assertEquals("0", request.getHeader("X-File-Size"))
         assertTrue(callbackSuccess)
     }
@@ -340,6 +355,7 @@ class StreamingTransferRegressionTest {
                 "sha256": "$expectedSha256"
             }
         """.trimIndent()
+        enqueueAnnouncementResponse()
         server.enqueue(MockResponse().setResponseCode(200).setBody(serverResponseBody))
 
         transferManager.sendFile(
@@ -349,7 +365,7 @@ class StreamingTransferRegressionTest {
             useLegacyEndpoint = true
         ) { _, _ -> }
 
-        val request = server.takeRequest()
+        val request = takeUploadRequest()
         assertEquals("/upload", request.path)
         // Even a stale legacy flag must retain modern encoding and endpoint.
         val nameHeader = request.getHeader("X-File-Name")
@@ -363,6 +379,7 @@ class StreamingTransferRegressionTest {
         val item = createTestFile("cancel_test.txt", "Some large content for streaming test")
 
         // Server delays response so transfer is active
+        enqueueAnnouncementResponse()
         server.enqueue(MockResponse().setResponseCode(200).setBodyDelay(5, java.util.concurrent.TimeUnit.SECONDS).setBody("{}"))
 
         val scope = CoroutineScope(Dispatchers.IO)
@@ -380,7 +397,10 @@ class StreamingTransferRegressionTest {
             }
         }
 
-        delay(150)
+        kotlinx.coroutines.withContext(Dispatchers.IO) {
+            assertEquals("/api/transfer/announce", server.takeRequest(5, java.util.concurrent.TimeUnit.SECONDS)?.path)
+            assertEquals("/upload", server.takeRequest(5, java.util.concurrent.TimeUnit.SECONDS)?.path)
+        }
         job.cancel()
         job.join()
 

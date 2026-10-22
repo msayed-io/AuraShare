@@ -48,7 +48,10 @@ fun AuraShareScreen(viewModel: MainViewModel) {
     val currentTransfer by viewModel.currentTransfer.collectAsState()
     val activeTransfers by viewModel.activeTransfers.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
-    val dragController = rememberFluidDragController(onSendItem = viewModel::sendItem)
+    val dragController = rememberFluidDragController(
+        onSendItem = viewModel::sendItem,
+        onSendItemWithDirection = viewModel::sendItem
+    )
     val density = LocalDensity.current
     val bottomInset = with(density) { WindowInsets.navigationBars.getBottom(this).toDp() }
 

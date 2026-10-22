@@ -19,6 +19,7 @@ import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okio.BufferedSink
 import org.json.JSONObject
@@ -40,6 +41,13 @@ class StreamingTransferManager(private val context: Context) {
         .readTimeout(60, TimeUnit.SECONDS)
         .retryOnConnectionFailure(false)
         .build()
+
+    // A separate whole-call deadline includes connection, request and response headers.
+    // Redirects/retries remain disabled so the session token never leaves this peer.
+    private val announceClient = httpClient.newBuilder()
+        .callTimeout(1500, TimeUnit.MILLISECONDS)
+        .build()
+    private val thumbnails = MediaThumbnailGenerator(context)
 
     private val _activeTransfers = MutableStateFlow<List<TransferRecord>>(emptyList())
     val activeTransfers: StateFlow<List<TransferRecord>> = _activeTransfers.asStateFlow()
@@ -68,9 +76,17 @@ class StreamingTransferManager(private val context: Context) {
         port: Int,
         token: String? = null,
         @Suppress("UNUSED_PARAMETER") useLegacyEndpoint: Boolean = false,
+        direction: String = "top",
         onComplete: (Boolean, String?) -> Unit
     ) = withContext(Dispatchers.IO) {
         val transferId = UUID.randomUUID().toString()
+        val edge = when (direction) {
+            "top", "left", "right" -> direction
+            else -> {
+                Log.w(tag, "Invalid transfer direction; using top")
+                "top"
+            }
+        }
         val initialRecord = TransferRecord(
             id = transferId,
             item = item,
@@ -99,6 +115,14 @@ class StreamingTransferManager(private val context: Context) {
             markFailed(transferId, errorMsg)
             onComplete(false, errorMsg)
             return@withContext
+        }
+
+        try {
+            announce(item, host, port, token, transferId, edge)
+        } catch (cancelled: CancellationException) {
+            markFailed(transferId, "تم إلغاء عملية النقل")
+            onComplete(false, "تم الإلغاء")
+            throw cancelled
         }
 
         val startTime = System.currentTimeMillis()
@@ -167,6 +191,7 @@ class StreamingTransferManager(private val context: Context) {
             .header("X-File-Name", encodedFileName)
             .header("X-File-Type", item.mimeType.ifEmpty { "application/octet-stream" })
             .header("X-Transfer-Id", transferId)
+            .header("X-Direction", edge)
 
         if (isSizeKnown) {
             requestBuilder.header("X-File-Size", totalSize.toString())
@@ -228,6 +253,58 @@ class StreamingTransferManager(private val context: Context) {
             Log.e(tag, errorMsg, e)
             markFailed(transferId, errorMsg)
             onComplete(false, errorMsg)
+        }
+    }
+
+    private suspend fun announce(
+        item: MediaItem,
+        host: String,
+        port: Int,
+        token: String?,
+        transferId: String,
+        direction: String
+    ) {
+        try {
+            val mime = item.mimeType.ifEmpty { "application/octet-stream" }
+            val kind = when {
+                mime.startsWith("image/", ignoreCase = true) -> "image"
+                mime.startsWith("video/", ignoreCase = true) -> "video"
+                else -> "other"
+            }
+            val payload = JSONObject()
+                .put("id", transferId)
+                .put("direction", direction)
+                .put("name", item.name)
+                .put("size", item.sizeBytes)
+                .put("mime", mime)
+                .put("kind", kind)
+                .put("thumb", thumbnails.generate(item) ?: JSONObject.NULL)
+            val builder = Request.Builder()
+                .url("http://$host:$port/api/transfer/announce")
+                .header("User-Agent", "AuraShare-Android-Client/1.0")
+                .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull()))
+            if (!token.isNullOrBlank()) builder.header("X-AuraShare-Token", token)
+            val call = announceClient.newCall(builder.build())
+            suspendCancellableCoroutine<Unit> { continuation ->
+                continuation.invokeOnCancellation { call.cancel() }
+                call.enqueue(object : Callback {
+                    override fun onFailure(call: Call, e: IOException) {
+                        Log.w(tag, "Announcement unavailable; continuing file transfer", e)
+                        if (!continuation.isCancelled) continuation.resumeWith(Result.success(Unit))
+                    }
+
+                    override fun onResponse(call: Call, response: Response) {
+                        response.use {
+                            if (!it.isSuccessful) Log.w(tag, "Announcement HTTP ${it.code}; continuing file transfer")
+                        }
+                        if (!continuation.isCancelled) continuation.resumeWith(Result.success(Unit))
+                    }
+                })
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (e: Exception) {
+            Log.w(tag, "Announcement failed; continuing file transfer", e)
         }
     }
 
