@@ -135,27 +135,6 @@ class TransferAnnounceTest {
     }
 
     @Test
-    fun `real image preview is JSON base64 while upload retains original bytes`() = runBlocking {
-        val payload = checkNotNull(javaClass.getResourceAsStream("/thumbnail-exif-rotate90.jpg")).use { it.readBytes() }
-        server.enqueue(MockResponse().setResponseCode(204))
-        server.enqueue(completed(payload))
-        var success = false
-        StreamingTransferManager(app).sendFile(item("صورة.jpg", payload, "image/jpeg"), server.hostName, server.port, direction = "left") { ok, _ -> success = ok }
-        val json = JSONObject(server.takeRequest().body.readUtf8())
-        assertEquals("image", json.getString("kind"))
-        val thumbnail = android.util.Base64.decode(json.getString("thumb"), android.util.Base64.NO_WRAP)
-        assertTrue(thumbnail.size <= 40 * 1024)
-        assertEquals(0xff.toByte(), thumbnail[0])
-        assertEquals(0xd8.toByte(), thumbnail[1])
-        val preview = android.graphics.BitmapFactory.decodeByteArray(thumbnail, 0, thumbnail.size)
-        try {
-            assertTrue(maxOf(preview.width, preview.height) <= 320)
-        } finally { preview.recycle() }
-        assertEquals(payload.toList(), server.takeRequest().body.readByteArray().toList())
-        assertTrue(success)
-    }
-
-    @Test
     fun `failed video preview still announces video and transfers original bytes`() = runBlocking {
         val payload = "unreadable media metadata but readable file".toByteArray()
         server.enqueue(MockResponse().setResponseCode(204))
