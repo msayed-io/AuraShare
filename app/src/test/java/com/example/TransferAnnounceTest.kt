@@ -34,7 +34,7 @@ class TransferAnnounceTest {
     fun setUp() {
         app = ApplicationProvider.getApplicationContext()
         server = MockWebServer()
-        server.start()
+        server.start(java.net.InetAddress.getByName("127.0.0.1"), 0)
     }
 
     @After
@@ -123,15 +123,16 @@ class TransferAnnounceTest {
             var error: String? = null
             StreamingTransferManager(app).sendFile(
                 item = item("fallback.bin", payload, "application/octet-stream"),
-                host = server.hostName,
+                // Match the bound address: after the timeout, localhost can select unbound ::1.
+                host = "127.0.0.1",
                 port = server.port
             ) { ok, message -> success = ok; error = message }
             val elapsedMs = (System.nanoTime() - started) / 1_000_000
-            println("Announcement fallback ${announceResponse.status}: total announce+upload ${elapsedMs}ms, success=$success, error=$error, requests=${server.requestCount}")
+            println("Announcement fallback ${announceResponse.status}: total announce+upload ${elapsedMs}ms")
             assertTrue("failure must not block transfer excessively: ${elapsedMs}ms", elapsedMs < 3500)
+            assertTrue("Upload must survive ${announceResponse.status}: $error", success)
             assertEquals("/api/transfer/announce", server.takeRequest(5, java.util.concurrent.TimeUnit.SECONDS)?.path)
-            assertEquals("Missing upload: success=$success, error=$error, requests=${server.requestCount}", "/upload", server.takeRequest(5, java.util.concurrent.TimeUnit.SECONDS)?.path)
-            assertTrue(success)
+            assertEquals("/upload", server.takeRequest(5, java.util.concurrent.TimeUnit.SECONDS)?.path)
         }
     }
 

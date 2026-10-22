@@ -62,8 +62,6 @@ jobs:
             -storepass android -keypass android -alias androiddebugkey \
             -keyalg RSA -keysize 2048 -validity 10000 \
             -dname 'CN=Android Debug,O=Android,C=US'
-      - name: Diagnose stalled Android transfer tests (bounded, with thread dumps)
-        run: bash .github/scripts/diagnose_android_tests.sh
       - name: Unit/integration tests, Android lint and debug APK
         run: gradle --no-daemon --stacktrace testDebugUnitTest lintDebug assembleDebug
       - name: Require real cross-application tests without skips
