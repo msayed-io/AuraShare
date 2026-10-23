@@ -64,6 +64,7 @@ import com.example.data.model.TransferStatus
 import com.example.data.network.DiscoveryState
 import com.example.data.network.NearbyPeer
 import com.example.data.network.PeerStatus
+import com.example.data.network.SecureState
 
 private val HeaderCapsuleShape = RoundedCornerShape(22.dp)
 
@@ -79,10 +80,16 @@ fun DesktopCapsuleHeader(
     isBeingAttracted: Boolean,
     modifier: Modifier = Modifier,
     title: String = "AuraShare",
+    secureState: SecureState? = null,
+    onScanQr: () -> Unit = {},
+    onConnectTrusted: (String) -> Unit = {},
+    onDisconnectTrusted: () -> Unit = {},
+    onForgetTrusted: (String) -> Unit = {},
 ) {
     val nearby = (discoveryState as? DiscoveryState.Nearby)?.peers.orEmpty()
-    val isConnected = discoveryState is DiscoveryState.Connected || nearby.any { it.status == PeerStatus.CONNECTED }
+    val isConnected = secureState?.connected != null || discoveryState is DiscoveryState.Connected || nearby.any { it.status == PeerStatus.CONNECTED }
     val isSearching = discoveryState is DiscoveryState.Searching
+    val connectionStatus = if (secureState?.connected != null) "متصل بأمان — TLS 1.3" else statusLabel(discoveryState, isConnected)
     var statusExpanded by remember { mutableStateOf(false) }
     var actionsExpanded by remember { mutableStateOf(false) }
     val pulse by rememberInfiniteTransition(label = "nearby-pulse").animateFloat(
@@ -106,12 +113,12 @@ fun DesktopCapsuleHeader(
                     .widthIn(max = titleMaxWidth)
                     .onGloballyPositioned { onCapsuleBoundsChanged(it.boundsInRoot()) }
                     .semantics {
-                        stateDescription = statusLabel(discoveryState, isConnected) + transferLabel
+                        stateDescription = connectionStatus + transferLabel
                         liveRegion = LiveRegionMode.Polite
                     }
                     .testTag("desktop_capsule_status"),
                 height = 44.dp,
-                contentDescription = "$title، ${statusLabel(discoveryState, isConnected)}$transferLabel",
+                contentDescription = "$title، $connectionStatus$transferLabel",
                 onClick = { statusExpanded = !statusExpanded },
             ) {
                 Row(
@@ -129,6 +136,15 @@ fun DesktopCapsuleHeader(
                 onDismissRequest = { statusExpanded = false },
                 modifier = Modifier.width(300.dp),
             ) {
+                if (secureState != null) {
+                    SecureDevicesPanel(
+                        state = secureState,
+                        onScanQr = { onScanQr(); statusExpanded = false },
+                        onConnect = onConnectTrusted,
+                        onDisconnect = onDisconnectTrusted,
+                        onForget = onForgetTrusted,
+                    )
+                }
                 NearbyConnectionDetails(
                     discoveryState = discoveryState,
                     currentTransfer = currentTransfer,
@@ -192,7 +208,7 @@ fun NearbyConnectionDetails(
 ) {
     val nearby = (discoveryState as? DiscoveryState.Nearby)?.peers.orEmpty()
     Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("الاتصال القريب", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+        Text("الاتصال القديم — غير مشفّر", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
         nearby.forEach { peer ->
             Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(MaterialTheme.colorScheme.surface).padding(10.dp)) {
                 Text(peer.deviceName ?: "اسم الكمبيوتر غير متاح", color = MaterialTheme.colorScheme.onSurface, fontSize = 13.sp)

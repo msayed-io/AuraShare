@@ -40,10 +40,14 @@ import com.example.ui.components.MediaGridView
 import com.example.ui.components.PermissionGate
 import com.example.ui.components.TransferHistorySheet
 import com.example.ui.components.rememberFluidDragController
+import com.example.ui.components.SecureQrScanner
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
 
 @Composable
 fun AuraShareScreen(viewModel: MainViewModel) {
     val uiState by viewModel.uiState.collectAsState()
+    val secureState by viewModel.secureState.collectAsState()
     val discoveryState by viewModel.discoveryState.collectAsState()
     val currentTransfer by viewModel.currentTransfer.collectAsState()
     val activeTransfers by viewModel.activeTransfers.collectAsState()
@@ -128,7 +132,12 @@ fun AuraShareScreen(viewModel: MainViewModel) {
                         onOpenHistory = { viewModel.showHistorySheet(true) },
                         onCapsuleBoundsChanged = {},
                         isBeingAttracted = dragController.isAttracted,
-                        modifier = Modifier.align(Alignment.TopCenter)
+                        modifier = Modifier.align(Alignment.TopCenter),
+                        secureState = secureState,
+                        onScanQr = { viewModel.showQrScanner(true) },
+                        onConnectTrusted = viewModel::connectTrusted,
+                        onDisconnectTrusted = viewModel::disconnectTrusted,
+                        onForgetTrusted = viewModel::forgetTrusted,
                     )
                     // AuraShare has no create/add action: use a single centered capsule.
                     FloatingBottomNavigation(
@@ -159,6 +168,18 @@ fun AuraShareScreen(viewModel: MainViewModel) {
             TransferHistorySheet(
                 transfers = activeTransfers,
                 onDismiss = { viewModel.showHistorySheet(false) }
+            )
+        }
+        if (uiState.showQrScanner) {
+            SecureQrScanner(onScanned = viewModel::pairSecureQr, onDismiss = { viewModel.showQrScanner(false) })
+        }
+        uiState.pendingLegacyPeer?.let {
+            AlertDialog(
+                onDismissRequest = viewModel::cancelLegacyPairing,
+                title = { Text("اتصال قديم غير مشفّر") },
+                text = { Text("هذا المسار يستخدم HTTP؛ يمكن لمن يراقب الشبكة رؤية الملفات والصور المصغرة وبيانات الاقتران. استخدمه فقط على شبكة خاصة تثق بها، أو حدّث الكمبيوتر واستخدم QR للاتصال الآمن. هل توافق على هذا الاتصال غير المشفّر؟ ستظل موافقة الكمبيوتر مطلوبة.") },
+                confirmButton = { TextButton(onClick = viewModel::confirmLegacyPairing) { Text("أوافق على الاتصال غير المشفّر") } },
+                dismissButton = { TextButton(onClick = viewModel::cancelLegacyPairing) { Text("إلغاء") } },
             )
         }
     }

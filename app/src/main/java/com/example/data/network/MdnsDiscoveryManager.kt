@@ -21,8 +21,47 @@ sealed class DiscoveryState {
     data class Connected(val serviceName: String, val host: String, val port: Int, val deviceName: String, val requiresPairing: Boolean = true, val protocolVersion: Int = 2) : DiscoveryState()
     data class Error(val message: String) : DiscoveryState()
 }
-data class NearbyPeer(val serviceName: String, val host: String, val port: Int, val deviceName: String? = null, val status: PeerStatus = PeerStatus.NEARBY, val serviceType: String = "_aurashare._tcp")
+data class NearbyPeer(
+    val serviceName: String,
+    val host: String,
+    val port: Int,
+    val deviceName: String? = null,
+    val status: PeerStatus = PeerStatus.NEARBY,
+    val serviceType: String = "_aurashare._tcp",
+    val secureServerId: String? = null,
+    val securePort: Int? = null
+)
 enum class PeerStatus { NEARBY, PAIRING, CONNECTED, DISCONNECTED }
+
+private val secureServerIdPattern = Regex("[0-9a-f]{64}")
+private fun validSecureServerId(value: String?) = value?.takeIf { it.matches(secureServerIdPattern) }
+private fun endpointKey(peer: NearbyPeer) = "${peer.host}:${peer.port}"
+
+/** UI projection only: mDNS names are aliases, while host:port is the endpoint identity. */
+internal fun consolidateNearbyPeers(peers: Collection<NearbyPeer>): List<NearbyPeer> = peers
+    .groupBy(::endpointKey)
+    .values
+    .map { aliases ->
+        val selected = aliases.sortedWith(
+            compareByDescending<NearbyPeer> { it.status.priority() }
+                .thenByDescending { validSecureServerId(it.secureServerId) != null }
+                .thenBy { it.deviceName ?: "" }
+                .thenBy { it.serviceName }
+        ).first()
+        // Discovery hints are an inseparable pair; never mix aliases.
+        val secureHints = aliases.firstOrNull { validSecureServerId(it.secureServerId) != null && it.securePort in 1..65535 }
+        val secureId = validSecureServerId(secureHints?.secureServerId)
+        val securePort = secureHints?.securePort
+        selected.copy(secureServerId = secureId, securePort = securePort)
+    }
+    .sortedBy { it.deviceName ?: "AuraShare (${it.host})" }
+
+private fun PeerStatus.priority() = when (this) {
+    PeerStatus.CONNECTED -> 4
+    PeerStatus.PAIRING -> 3
+    PeerStatus.NEARBY -> 2
+    PeerStatus.DISCONNECTED -> 1
+}
 
 /** Small seam for deterministic lifecycle tests; production delegates to Android's NsdManager. */
 interface NsdDiscoveryClient {
@@ -45,6 +84,7 @@ class MdnsDiscoveryManager(
     private val client = PairingClient()
     private val peers = ConcurrentHashMap<String, NearbyPeer>()
     private val jobs = ConcurrentHashMap<String, Job>()
+    private val attempts = ConcurrentHashMap<String, AtomicLong>()
     private val tokens = ConcurrentHashMap<String, String>()
     private val resolveQueue = ArrayDeque<ResolveItem>()
     private val serviceEpoch = ConcurrentHashMap<String, Long>()
@@ -69,16 +109,18 @@ class MdnsDiscoveryManager(
         override fun onServiceLost(info: NsdServiceInfo?) { owner.lost(this, info) }
     }
 
-    private fun publish() { _state.value = if (peers.isEmpty()) DiscoveryState.Searching() else DiscoveryState.Nearby(peers.values.sortedBy { it.deviceName ?: "AuraShare (${it.host})" }) }
+    private fun publish() { _state.value = if (peers.isEmpty()) DiscoveryState.Searching() else DiscoveryState.Nearby(consolidateNearbyPeers(peers.values)) }
     private fun current(run: Run) = activeRun === run && requested && generation.get() == run.generation
     private fun type(value: String?) = value.orEmpty().trimEnd('.')
     private fun key(name: String?, serviceType: String?) = "${name.orEmpty()}|${type(serviceType)}"
+    private fun nextAttempt(k: String) = attempts.computeIfAbsent(k) { AtomicLong() }.incrementAndGet()
+    private suspend fun validAttempt(k: String, ticket: Long): Boolean = attempts[k]?.get() == ticket && jobs[k] === currentCoroutineContext()[Job] && requested && generation.get() == (activeRun?.generation ?: -1L)
 
     fun startDiscovery() {
         synchronized(stateLock) { if (requested) return; requested = true }
         val run = Run(generation.incrementAndGet()).also { it.owner = this }
         activeRun = run; discovering = true // mark before the async callback: duplicate starts are rejected
-        jobs.values.forEach { it.cancel() }; jobs.clear(); tokens.clear(); peers.clear()
+        jobs.values.forEach { it.cancel() }; jobs.clear(); tokens.clear(); peers.keys.forEach(::nextAttempt); peers.clear()
         synchronized(stateLock) { resolveQueue.clear(); activeResolve = null; serviceEpoch.clear() }
         publish(); acquireLock()
         try { nsdClient.discover("_aurashare._tcp", NsdManager.PROTOCOL_DNS_SD, run) }
@@ -104,12 +146,16 @@ class MdnsDiscoveryManager(
     private fun found(run: Run, info: NsdServiceInfo?) { if (current(run) && info?.serviceName != null) enqueueResolve(run, info) }
     private fun lost(run: Run, info: NsdServiceInfo?) {
         if (!current(run) || info == null) return
-        val k = key(info.serviceName, info.serviceType); serviceEpoch[k] = (serviceEpoch[k] ?: 0L) + 1L
-        val oldToken = tokens.remove(k); jobs.remove(k)?.cancel(); peers.remove(k)
+        val k = key(info.serviceName, info.serviceType); serviceEpoch[k] = (serviceEpoch[k] ?: 0L) + 1L; nextAttempt(k)
+        val oldPeer = peers.remove(k)
+        val aliases = oldPeer?.let { old -> peers.values.filter { endpointKey(it) == endpointKey(old) } }.orEmpty()
+        val oldToken = tokens.remove(k)
+        jobs.remove(k)?.cancel()
+        if (oldToken != null && aliases.any { it.status == PeerStatus.CONNECTED }) aliases.first { it.status == PeerStatus.CONNECTED }.let { tokens[key(it.serviceName, it.serviceType)] = oldToken }
         // Android permits one native resolve at a time. A lost service invalidates
         // its result, but does not cancel the underlying native operation.
         synchronized(stateLock) { resolveQueue.removeAll { it.key == k } }
-        if (oldToken != null) scope.launch(Dispatchers.IO) { runCatching { client.disconnect(PairingClient.Endpoint(info.host?.hostAddress ?: return@launch, info.port), oldToken) } }
+        if (oldToken != null && aliases.none { it.status == PeerStatus.CONNECTED || it.status == PeerStatus.PAIRING }) scope.launch(Dispatchers.IO) { runCatching { client.disconnect(PairingClient.Endpoint(info.host?.hostAddress ?: return@launch, info.port), oldToken) } }
         publish(); resolveNext()
     }
 
@@ -131,10 +177,16 @@ class MdnsDiscoveryManager(
             override fun onServiceResolved(resolved: NsdServiceInfo?) {
                 if (!valid(item)) { finishResolve(item); resolveNext(); return }
                 val host = resolved?.host; val port = resolved?.port ?: -1
-                if (host is Inet4Address && port in 1..65535 && host.hostAddress != null) {
+                if (host is Inet4Address && port in 1..65535 && host.hostAddress != null && SecurePairingManager.isAllowedLanIpv4(host.hostAddress!!)) {
                     val peer = NearbyPeer(resolved?.serviceName ?: item.info.serviceName ?: "AuraShare", host.hostAddress!!, port, serviceType = type(resolved?.serviceType ?: item.info.serviceType))
                     peers[item.key] = peer; publish()
-                    scope.launch(Dispatchers.IO) { val friendly = runCatching { client.handshake(PairingClient.Endpoint(peer.host, peer.port)).hostname }.getOrNull(); if (requested && generation.get() == item.run && serviceEpoch[item.key] == item.epoch) { peers.computeIfPresent(item.key) { _, p -> p.copy(deviceName = friendly ?: p.deviceName) }; publish() } }
+                    scope.launch(Dispatchers.IO) {
+                        val info = runCatching { client.handshake(PairingClient.Endpoint(peer.host, peer.port)) }.getOrNull()
+                        if (requested && generation.get() == item.run && serviceEpoch[item.key] == item.epoch) {
+                            peers.computeIfPresent(item.key) { _, p -> p.copy(deviceName = info?.hostname ?: p.deviceName, secureServerId = info?.secureServerId, securePort = info?.securePort) }
+                            publish()
+                        }
+                    }
                 }
                 finishResolve(item); resolveNext()
             }
@@ -145,6 +197,7 @@ class MdnsDiscoveryManager(
 
     fun stopDiscovery() {
         val oldRun = activeRun; generation.incrementAndGet(); requested = false; discovering = false
+        attempts.keys.forEach(::nextAttempt)
         jobs.values.forEach { it.cancel() }; jobs.clear(); synchronized(stateLock) { resolveQueue.clear(); activeResolve = null }
         val oldTokens = tokens.entries.toList(); tokens.clear(); oldTokens.forEach { (k, token) -> peers[k]?.let { peer -> scope.launch(Dispatchers.IO) { runCatching { client.disconnect(PairingClient.Endpoint(peer.host, peer.port), token) } } } }
         if (oldRun != null) runCatching { nsdClient.stop(oldRun) }
@@ -153,29 +206,42 @@ class MdnsDiscoveryManager(
 
     fun pair(peer: NearbyPeer, onResult: (Boolean, String?) -> Unit) {
         val k = key(peer.serviceName, peer.serviceType)
-        // There is one target: cancel pending pairing too, not only already-connected peers.
-        peers.entries.filter { it.key != k && it.value.status == PeerStatus.PAIRING }.forEach { jobs.remove(it.key)?.cancel(); peers[it.key] = it.value.copy(status = PeerStatus.NEARBY) }
+        if (!SecurePairingManager.isAllowedLanIpv4(peer.host)) return
+        if (peers.any { it.key != k && endpointKey(it.value) == endpointKey(peer) && it.value.status in setOf(PeerStatus.CONNECTED, PeerStatus.PAIRING) } || peers[k]?.status in setOf(PeerStatus.CONNECTED, PeerStatus.PAIRING)) return
+        peers.entries.filter { it.key != k && it.value.status == PeerStatus.PAIRING }.forEach { nextAttempt(it.key); jobs.remove(it.key)?.cancel(); peers[it.key] = it.value.copy(status = PeerStatus.NEARBY) }
         peers.entries.filter { it.key != k && it.value.status == PeerStatus.CONNECTED }.forEach { disconnect(it.value) }
-        jobs[k]?.cancel(); peers[k] = peer.copy(serviceType = type(peer.serviceType), status = PeerStatus.PAIRING); publish()
+        jobs[k]?.cancel(); val attempt = nextAttempt(k)
+        peers[k] = peer.copy(serviceType = type(peer.serviceType), status = PeerStatus.PAIRING); publish()
         val ticket = generation.get()
-        jobs[k] = scope.launch(Dispatchers.IO) {
+        val job = scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
             try {
+                if (!validAttempt(k, attempt)) return@launch
                 val endpoint = PairingClient.Endpoint(peer.host, peer.port); val info = client.handshake(endpoint)
                 val request = client.requestPair(endpoint, PairingClient.defaultClientId(context.getSharedPreferences("aurashare_prefs", Context.MODE_PRIVATE)), PairingClient.deviceName())
-                val status = client.awaitApproval(endpoint, request); ensureActive(); if (ticket != generation.get()) return@launch
+                val status = client.awaitApproval(endpoint, request); ensureActive(); if (!validAttempt(k, attempt) || ticket != generation.get()) return@launch
                 if (status.status == "approved" && !status.token.isNullOrBlank() && status.serverId == info.serverId) {
-                    check(client.heartbeat(endpoint, status.token)) { "heartbeat failed" }; tokens[k] = status.token
-                    peers[k] = peer.copy(deviceName = status.deviceName ?: info.hostname, status = PeerStatus.CONNECTED); publish(); withContext(Dispatchers.Main) { onResult(true, null) }
-                    while (isActive && ticket == generation.get() && client.heartbeat(endpoint, status.token)) delay(10_000)
-                    tokens.remove(k); peers.computeIfPresent(k) { _, p -> p.copy(status = PeerStatus.DISCONNECTED) }; publish()
-                } else { peers[k] = peer.copy(status = PeerStatus.NEARBY); publish(); withContext(Dispatchers.Main) { onResult(false, status.status) } }
+                    check(client.heartbeat(endpoint, status.token)) { "heartbeat failed" }; ensureActive(); if (!validAttempt(k, attempt)) return@launch
+                    tokens[k] = status.token; ensureActive(); if (!validAttempt(k, attempt)) return@launch
+                    peers[k] = peer.copy(deviceName = status.deviceName ?: info.hostname, status = PeerStatus.CONNECTED, secureServerId = info.secureServerId, securePort = info.securePort); publish()
+                    withContext(Dispatchers.Main) { ensureActive(); if (validAttempt(k, attempt)) onResult(true, null) }
+                    while (isActive && validAttempt(k, attempt) && ticket == generation.get() && client.heartbeat(endpoint, status.token)) { ensureActive(); delay(10_000) }
+                    if (attempts[k]?.get() == attempt && tokens[k] == status.token) { tokens.remove(k, status.token); peers.computeIfPresent(k) { _, p -> if (p.status == PeerStatus.CONNECTED) p.copy(status = PeerStatus.DISCONNECTED) else p }; publish() }
+                } else if (validAttempt(k, attempt)) { peers[k] = peer.copy(status = PeerStatus.NEARBY); publish(); withContext(Dispatchers.Main) { ensureActive(); if (validAttempt(k, attempt)) onResult(false, status.status) } }
             } catch (e: CancellationException) { throw e }
-            catch (_: Exception) { tokens.remove(k); if (ticket == generation.get()) { peers[k] = peer.copy(status = PeerStatus.NEARBY); publish(); withContext(Dispatchers.Main) { onResult(false, "تعذر الاقتران") } } }
+            catch (_: Exception) { if (attempts[k]?.get() == attempt) { tokens.remove(k); if (validAttempt(k, attempt)) { peers[k] = peer.copy(status = PeerStatus.NEARBY); publish(); withContext(Dispatchers.Main) { ensureActive(); if (validAttempt(k, attempt)) onResult(false, "تعذر الاقتران") } } } }
         }
+        jobs[k] = job; job.start()
     }
     fun tokenFor(peer: NearbyPeer) = tokens[key(peer.serviceName, peer.serviceType)]
-    fun disconnect(peer: NearbyPeer) { val k = key(peer.serviceName, peer.serviceType); val token = tokens.remove(k); jobs.remove(k)?.cancel(); peers[k] = peer.copy(status = PeerStatus.NEARBY); publish(); if (token != null) scope.launch(Dispatchers.IO) { runCatching { client.disconnect(PairingClient.Endpoint(peer.host, peer.port), token) } } }
-    fun nearbyPeers(): List<NearbyPeer> = peers.values.toList()
+        ?: peers.entries.firstOrNull { endpointKey(it.value) == endpointKey(peer) && it.value.status == PeerStatus.CONNECTED }?.let { tokens[it.key] }
+    fun disconnect(peer: NearbyPeer) {
+        val matching = peers.entries.filter { endpointKey(it.value) == endpointKey(peer) }
+        matching.forEach { nextAttempt(it.key) }
+        val token = matching.asSequence().mapNotNull { tokens.remove(it.key) }.firstOrNull()
+        matching.forEach { (alias, value) -> jobs.remove(alias)?.cancel(); peers[alias] = value.copy(status = PeerStatus.NEARBY) }
+        publish(); if (token != null) scope.launch(Dispatchers.IO) { runCatching { client.disconnect(PairingClient.Endpoint(peer.host, peer.port), token) } }
+    }
+    fun nearbyPeers(): List<NearbyPeer> = consolidateNearbyPeers(peers.values)
     private fun acquireLock() { runCatching { if (lock == null) lock = wifi?.createMulticastLock("AuraShareMdns")?.apply { setReferenceCounted(false); acquire() } } }
     private fun releaseLock() { runCatching { lock?.takeIf { it.isHeld }?.release() }; lock = null }
 }

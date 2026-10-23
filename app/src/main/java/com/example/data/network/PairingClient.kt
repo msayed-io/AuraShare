@@ -20,7 +20,14 @@ class PairingClient(
         .connectTimeout(4, TimeUnit.SECONDS).readTimeout(5, TimeUnit.SECONDS)
         .writeTimeout(5, TimeUnit.SECONDS).retryOnConnectionFailure(false).build()
 ) {
-    data class PeerInfo(val hostname: String, val protocol: Int, val requiresPairing: Boolean, val serverId: String)
+    data class PeerInfo(
+        val hostname: String,
+        val protocol: Int,
+        val requiresPairing: Boolean,
+        val serverId: String,
+        val secureServerId: String? = null,
+        val securePort: Int? = null
+    )
     data class PairRequest(val requestId: String, val secret: String)
     data class PairStatus(val status: String, val token: String?, val deviceName: String?, val serverId: String?)
     data class Endpoint(val host: String, val port: Int) {
@@ -45,7 +52,17 @@ class PairingClient(
             val serverId = json.optString("server_id"); require(serverId.isNotBlank()) { "missing server_id" }
             val hostname = json.optString("hostname").ifEmpty { json.optString("server") }
             require(hostname.isNotBlank()) { "missing hostname" }
-            return PeerInfo(hostname, 2, true, serverId)
+            val candidateSecureServerId = json.optString("secure_server_id")
+            val candidateSecurePort = json.optInt("secure_port", -1)
+            val securePairValid = candidateSecureServerId.matches(SECURE_SERVER_ID) && candidateSecurePort in 1..65535
+            return PeerInfo(
+                hostname,
+                2,
+                true,
+                serverId,
+                candidateSecureServerId.takeIf { securePairValid },
+                candidateSecurePort.takeIf { securePairValid }
+            )
         }
     }
 
@@ -92,6 +109,7 @@ class PairingClient(
     private fun jsonBody(response: okhttp3.Response): JSONObject = JSONObject(response.body?.string().orEmpty())
     private fun url(endpoint: Endpoint, path: String) = "http://${endpoint.host}:${endpoint.port}$path"
     companion object {
+        private val SECURE_SERVER_ID = Regex("[0-9a-f]{64}")
         private val JSON = "application/json; charset=utf-8".toMediaType(); private val EMPTY = ByteArray(0).toRequestBody(null)
         fun randomSecret(): String { val bytes = ByteArray(32); SecureRandom().nextBytes(bytes); return bytes.joinToString("") { "%02x".format(it) } }
         fun defaultClientId(prefs: android.content.SharedPreferences): String = prefs.getString("client_id", null) ?: UUID.randomUUID().toString().also { prefs.edit().putString("client_id", it).apply() }

@@ -48,7 +48,7 @@ class MdnsDiscoveryManagerTest {
         val info = service("Desk", "_aurashare._tcp.")
         listener.onServiceFound(info)
         listener.onServiceLost(info)
-        fake.resolveListener?.onServiceResolved(resolved("Desk", "192.0.2.10", 45700, "_aurashare._tcp."))
+        fake.resolveListener?.onServiceResolved(resolved("Desk", "192.168.1.10", 45700, "_aurashare._tcp."))
         assertTrue(manager.nearbyPeers().isEmpty())
     }
 
@@ -56,11 +56,33 @@ class MdnsDiscoveryManagerTest {
         manager.startDiscovery(); val listener = fake.discoveryListeners.single()
         val info = service("Desk", "_aurashare._tcp.")
         listener.onServiceFound(info)
-        fake.resolveListener?.onServiceResolved(resolved("Desk", "192.0.2.10", 45700, "_aurashare._tcp."))
+        fake.resolveListener?.onServiceResolved(resolved("Desk", "192.168.1.10", 45700, "_aurashare._tcp."))
         val peer = manager.nearbyPeers().single()
         assertEquals(PeerStatus.NEARBY, peer.status)
         assertEquals("_aurashare._tcp", peer.serviceType)
         assertTrue(manager.state.value is DiscoveryState.Nearby)
+    }
+
+    @Test fun `same endpoint aliases are displayed once and connected wins`() {
+        val aliases = listOf(
+            NearbyPeer("Desk._aurashare._tcp", "192.168.1.10", 45700, "Desk", PeerStatus.NEARBY),
+            NearbyPeer("Desk (old)._aurashare._tcp", "192.168.1.10", 45700, "Desk", PeerStatus.CONNECTED, secureServerId = "a".repeat(64), securePort = 45701)
+        )
+
+        val displayed = consolidateNearbyPeers(aliases)
+        assertEquals(1, displayed.size)
+        assertEquals(PeerStatus.CONNECTED, displayed.single().status)
+        assertEquals("a".repeat(64), displayed.single().secureServerId)
+        assertEquals(45701, displayed.single().securePort)
+    }
+
+    @Test fun `connected endpoint alias cannot reappear as nearby candidate`() {
+        val displayed = consolidateNearbyPeers(listOf(
+            NearbyPeer("connected", "192.168.1.11", 45700, status = PeerStatus.CONNECTED),
+            NearbyPeer("new-alias", "192.168.1.11", 45700, status = PeerStatus.NEARBY)
+        ))
+        assertEquals(1, displayed.size)
+        assertEquals(PeerStatus.CONNECTED, displayed.single().status)
     }
 
     private fun service(name: String, type: String) = NsdServiceInfo().apply { serviceName = name; serviceType = type }

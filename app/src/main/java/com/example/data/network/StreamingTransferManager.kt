@@ -20,6 +20,8 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.HttpUrl
+import okhttp3.toHttpUrlOrNull
 import okhttp3.Response
 import okio.BufferedSink
 import org.json.JSONObject
@@ -77,6 +79,8 @@ class StreamingTransferManager(private val context: Context) {
         token: String? = null,
         @Suppress("UNUSED_PARAMETER") useLegacyEndpoint: Boolean = false,
         direction: String = "top",
+        secureClient: OkHttpClient? = null,
+        secureBaseUrl: String? = null,
         onComplete: (Boolean, String?) -> Unit
     ) = withContext(Dispatchers.IO) {
         val transferId = UUID.randomUUID().toString()
@@ -87,6 +91,23 @@ class StreamingTransferManager(private val context: Context) {
                 "top"
             }
         }
+        val secureSession = secureClient != null || secureBaseUrl != null
+        val baseUrl = if (secureSession) secureBaseUrl?.toHttpUrlOrNull() else null
+        if (secureSession && (secureClient == null || baseUrl == null ||
+                    baseUrl.scheme != "https" || !baseUrl.host.equals("aurashare.local", ignoreCase = true) ||
+                    baseUrl.encodedPath != "" && baseUrl.encodedPath != "/" ||
+                    baseUrl.username.isNotEmpty() || baseUrl.password.isNotEmpty() ||
+                    baseUrl.query != null || baseUrl.fragment != null)) {
+            val errorMsg = "جلسة HTTPS الآمنة تتطلب secureClient و secureBaseUrl صالحاً (HTTPS aurashare.local بلا مسار أو بيانات اعتماد)"
+            onComplete(false, errorMsg)
+            return@withContext
+        }
+        // These are immutable per-transfer references; secure traffic never falls back to HTTP.
+        val transferClient = secureClient ?: httpClient
+        val transferAnnounceClient = if (secureSession) {
+            transferClient.newBuilder().callTimeout(1500, TimeUnit.MILLISECONDS).build()
+        } else announceClient
+
         val initialRecord = TransferRecord(
             id = transferId,
             item = item,
@@ -118,11 +139,16 @@ class StreamingTransferManager(private val context: Context) {
         }
 
         try {
-            announce(item, host, port, token, transferId, edge)
+            announce(item, host, port, token, transferId, edge, baseUrl, transferAnnounceClient)
         } catch (cancelled: CancellationException) {
             markFailed(transferId, "تم إلغاء عملية النقل")
             onComplete(false, "تم الإلغاء")
             throw cancelled
+        } catch (_: Exception) {
+            val message = "تعذر تأكيد بدء النقل الآمن؛ لم يُرسل الملف ولم يُستخدم HTTP."
+            markFailed(transferId, message)
+            onComplete(false, message)
+            return@withContext
         }
 
         val startTime = System.currentTimeMillis()
@@ -185,7 +211,8 @@ class StreamingTransferManager(private val context: Context) {
         val encodedFileName = encodeModernFileName(item.name)
 
         val requestBuilder = Request.Builder()
-            .url("http://$host:$port$endpoint")
+            .url(if (secureSession) baseUrl!!.newBuilder().addPathSegment("upload").build()
+                else "http://$host:$port$endpoint")
             .header("User-Agent", "AuraShare-Android-Client/1.0")
             .header("X-Device-Name", encodeModernFileName(PairingClient.deviceName()))
             .header("X-File-Name", encodedFileName)
@@ -202,7 +229,7 @@ class StreamingTransferManager(private val context: Context) {
         }
 
         val request = requestBuilder.post(requestBody).build()
-        val call = httpClient.newCall(request)
+        val call = transferClient.newCall(request)
 
         try {
             val response: Response = suspendCancellableCoroutine { continuation ->
@@ -230,6 +257,8 @@ class StreamingTransferManager(private val context: Context) {
                 transferId = transferId,
                 totalBytesWritten = totalBytesWritten,
                 digest = digest,
+                secure = secureSession,
+                expectedSize = item.sizeBytes,
                 onComplete = onComplete
             )
 
@@ -262,7 +291,9 @@ class StreamingTransferManager(private val context: Context) {
         port: Int,
         token: String?,
         transferId: String,
-        direction: String
+        direction: String,
+        secureBaseUrl: HttpUrl?,
+        announceClientForTransfer: OkHttpClient
     ) {
         try {
             val mime = item.mimeType.ifEmpty { "application/octet-stream" }
@@ -280,30 +311,42 @@ class StreamingTransferManager(private val context: Context) {
                 .put("kind", kind)
                 .put("thumb", thumbnails.generate(item) ?: JSONObject.NULL)
             val builder = Request.Builder()
-                .url("http://$host:$port/api/transfer/announce")
+                .url(if (secureBaseUrl != null) secureBaseUrl.newBuilder()
+                    .addPathSegment("api").addPathSegment("transfer").addPathSegment("announce").build()
+                else "http://$host:$port/api/transfer/announce")
                 .header("User-Agent", "AuraShare-Android-Client/1.0")
                 .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull()))
             if (!token.isNullOrBlank()) builder.header("X-AuraShare-Token", token)
-            val call = announceClient.newCall(builder.build())
+            val call = announceClientForTransfer.newCall(builder.build())
             suspendCancellableCoroutine<Unit> { continuation ->
                 continuation.invokeOnCancellation { call.cancel() }
                 call.enqueue(object : Callback {
                     override fun onFailure(call: Call, e: IOException) {
-                        Log.w(tag, "Announcement unavailable; continuing file transfer", e)
-                        if (!continuation.isCancelled) continuation.resumeWith(Result.success(Unit))
+                        if (continuation.isCancelled) return
+                        if (secureBaseUrl != null) continuation.resumeWithException(e)
+                        else {
+                            Log.w(tag, "Announcement unavailable; continuing legacy file transfer", e)
+                            continuation.resumeWith(Result.success(Unit))
+                        }
                     }
 
                     override fun onResponse(call: Call, response: Response) {
+                        var failure: IOException? = null
                         response.use {
-                            if (!it.isSuccessful) Log.w(tag, "Announcement HTTP ${it.code}; continuing file transfer")
+                            if (!it.isSuccessful && secureBaseUrl != null) failure = IOException("secure announce rejected (${it.code})")
+                            else if (!it.isSuccessful) Log.w(tag, "Announcement HTTP ${it.code}; continuing legacy file transfer")
                         }
-                        if (!continuation.isCancelled) continuation.resumeWith(Result.success(Unit))
+                        if (!continuation.isCancelled) {
+                            if (failure != null) continuation.resumeWithException(failure!!)
+                            else continuation.resumeWith(Result.success(Unit))
+                        }
                     }
                 })
             }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (e: Exception) {
+            if (secureBaseUrl != null) throw e
             Log.w(tag, "Announcement failed; continuing file transfer", e)
         }
     }
@@ -313,6 +356,8 @@ class StreamingTransferManager(private val context: Context) {
         transferId: String,
         totalBytesWritten: Long,
         digest: MessageDigest,
+        secure: Boolean,
+        expectedSize: Long,
         onComplete: (Boolean, String?) -> Unit
     ) {
         response.use { resp ->
@@ -387,29 +432,24 @@ class StreamingTransferManager(private val context: Context) {
                 return
             }
 
-            // 2. Verify bytes received match bytes written
-            if (json.has("received")) {
-                val received = json.optLong("received", -1L)
-                if (received >= 0 && received != totalBytesWritten) {
-                    val err = "عدم تطابق حجم البيانات: الخادم استلم $received بايت بينما تم إرسال $totalBytesWritten بايت"
-                    Log.e(tag, err)
-                    markFailed(transferId, err)
-                    onComplete(false, err)
-                    return
-                }
+            // Secure sessions require exact server accounting; legacy keeps optional fields permissive.
+            val received = json.optLong("received", -1L)
+            if ((secure && (!json.has("received") || received != totalBytesWritten)) ||
+                (!secure && json.has("received") && received >= 0 && received != totalBytesWritten)) {
+                val err = "عدم تطابق حجم البيانات: الخادم استلم $received بايت بينما تم إرسال $totalBytesWritten بايت"
+                markFailed(transferId, err); onComplete(false, err); return
+            }
+            if (secure && expectedSize >= 0 && totalBytesWritten != expectedSize) {
+                val err = "حجم الملف المرسل لا يطابق الحجم المعروف: أرسل $totalBytesWritten من $expectedSize بايت"
+                markFailed(transferId, err); onComplete(false, err); return
             }
 
-            // 3. Verify SHA-256 checksum
             val computedSha256 = digest.digest().joinToString("") { "%02x".format(it) }
-            if (json.has("sha256")) {
-                val serverSha256 = json.optString("sha256", "").trim()
-                if (serverSha256.isNotEmpty() && !serverSha256.equals(computedSha256, ignoreCase = true)) {
-                    val err = "فشل التحقق الأمني: بصمة SHA-256 غير متطابقة (الخادم: $serverSha256، المرسل: $computedSha256)"
-                    Log.e(tag, err)
-                    markFailed(transferId, err)
-                    onComplete(false, err)
-                    return
-                }
+            val serverSha256 = json.optString("sha256", "").trim()
+            if ((secure && !Regex("^[0-9a-fA-F]{64}$").matches(serverSha256)) ||
+                (serverSha256.isNotEmpty() && !serverSha256.equals(computedSha256, ignoreCase = true))) {
+                val err = "فشل التحقق الأمني: بصمة SHA-256 مفقودة أو غير متطابقة"
+                markFailed(transferId, err); onComplete(false, err); return
             }
 
             // All checks passed!
