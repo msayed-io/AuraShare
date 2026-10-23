@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.view.MotionEvent
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.Camera
@@ -21,8 +22,13 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.Button
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconToggleButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -38,10 +44,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.FlashlightOff
+import androidx.compose.material.icons.filled.FlashlightOn
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.semantics.semantics
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.ZoomSuggestionOptions
@@ -92,6 +107,8 @@ fun SecureQrScanner(
         if (sessionActive.compareAndSet(true, false)) onDismiss()
     }
 
+    BackHandler(enabled = sessionActive.get(), onBack = ::dismiss)
+
     LaunchedEffect(Unit) {
         if (!hasCameraPermission && !permissionAsked && sessionActive.get()) {
             permissionAsked = true
@@ -103,36 +120,27 @@ fun SecureQrScanner(
         onDispose { sessionActive.set(false) }
     }
 
-    androidx.compose.ui.window.Dialog(
-        onDismissRequest = ::dismiss,
-        properties = androidx.compose.ui.window.DialogProperties(
-            usePlatformDefaultWidth = false,
-            dismissOnBackPress = true,
-            dismissOnClickOutside = false,
-        ),
-    ) {
-        Surface(modifier = Modifier.fillMaxSize(), color = Color.Black) {
-            SecureQrScannerContent(
-                context = context,
-                lifecycleOwner = lifecycleOwner,
-                sessionActive = sessionActive,
-                sessionGate = sessionGate,
-                hasCameraPermission = hasCameraPermission,
-                cameraError = cameraError,
-                camera = camera,
-                torchEnabled = torchEnabled,
-                onCameraReady = { camera = it },
-                onTorchChanged = { torchEnabled = it },
-                onError = { cameraError = it },
-                onRetryPermission = {
-                    cameraError = null
-                    permissionAsked = true
-                    permissionLauncher.launch(Manifest.permission.CAMERA)
-                },
-                onDismiss = ::dismiss,
-                onScanned = onScanned,
-            )
-        }
+    Surface(modifier = Modifier.fillMaxSize().testTag("qr_scanner_root"), color = Color.Black) {
+        SecureQrScannerContent(
+            context = context,
+            lifecycleOwner = lifecycleOwner,
+            sessionActive = sessionActive,
+            sessionGate = sessionGate,
+            hasCameraPermission = hasCameraPermission,
+            cameraError = cameraError,
+            camera = camera,
+            torchEnabled = torchEnabled,
+            onCameraReady = { camera = it },
+            onTorchChanged = { torchEnabled = it },
+            onError = { cameraError = it },
+            onRetryPermission = {
+                cameraError = null
+                permissionAsked = true
+                permissionLauncher.launch(Manifest.permission.CAMERA)
+            },
+            onDismiss = ::dismiss,
+            onScanned = onScanned,
+        )
     }
 }
 
@@ -277,7 +285,9 @@ private fun SecureQrScannerContent(
             )
         }
         Column(
-            modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.28f)).padding(24.dp),
+            modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.28f))
+                .windowInsetsPadding(androidx.compose.foundation.layout.WindowInsets.safeDrawing)
+                .padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.SpaceBetween,
         ) {
@@ -297,20 +307,52 @@ private fun SecureQrScannerContent(
                 }
             }
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                IconButton(onClick = onDismiss) { Text("إغلاق", color = Color.White) }
+                IconButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.size(48.dp).testTag("qr_close_button"),
+                ) {
+                    Icon(Icons.Filled.Close, contentDescription = "إغلاق ماسح QR", tint = Color.White)
+                }
                 if (camera?.cameraInfo?.hasFlashUnit() == true) {
-                    IconButton(onClick = {
-                        val next = !torchEnabled
-                        val result = camera.cameraControl.enableTorch(next)
-                        result.addListener({
-                            if (sessionActive.get()) {
-                                try { result.get(); onTorchChanged(next) }
-                                catch (_: Exception) { onError("تعذر تشغيل المصباح.") }
-                            }
-                        }, ContextCompat.getMainExecutor(context))
-                    }) { Text(if (torchEnabled) "إطفاء المصباح" else "المصباح", color = Color.White) }
+                    SecureQrTorchButton(
+                        enabled = true,
+                        checked = torchEnabled,
+                        onCheckedChange = { next ->
+                            val result = camera.cameraControl.enableTorch(next)
+                            result.addListener({
+                                if (sessionActive.get()) {
+                                    try { result.get(); onTorchChanged(next) }
+                                    catch (_: Exception) { onError("تعذر تشغيل المصباح.") }
+                                }
+                            }, ContextCompat.getMainExecutor(context))
+                        },
+                    )
                 }
             }
         }
+    }
+}
+
+/** Icon-only torch control; kept separate so its accessibility contract is testable. */
+@Composable
+internal fun SecureQrTorchButton(
+    enabled: Boolean,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    IconToggleButton(
+        checked = checked,
+        enabled = enabled,
+        onCheckedChange = onCheckedChange,
+        modifier = Modifier.size(48.dp).testTag("qr_torch_button").semantics {
+            role = Role.Switch
+            stateDescription = if (checked) "المصباح مفعّل" else "المصباح معطّل"
+        },
+    ) {
+        Icon(
+            imageVector = if (checked) Icons.Filled.FlashlightOn else Icons.Filled.FlashlightOff,
+            contentDescription = if (checked) "إطفاء المصباح" else "تشغيل المصباح",
+            tint = Color.White,
+        )
     }
 }

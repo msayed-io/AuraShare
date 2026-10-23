@@ -47,6 +47,17 @@ import androidx.compose.material3.TextButton
 @Composable
 fun AuraShareScreen(viewModel: MainViewModel) {
     val uiState by viewModel.uiState.collectAsState()
+
+    // QR is a real root destination: do not compose the media/permission tree
+    // underneath it, so the previous screen cannot remain visible or semantic.
+    if (uiState.showQrScanner) {
+        SecureQrScanner(
+            onScanned = viewModel::pairSecureQr,
+            onDismiss = { viewModel.showQrScanner(false) },
+        )
+        return
+    }
+
     val secureState by viewModel.secureState.collectAsState()
     val discoveryState by viewModel.discoveryState.collectAsState()
     val currentTransfer by viewModel.currentTransfer.collectAsState()
@@ -169,9 +180,6 @@ fun AuraShareScreen(viewModel: MainViewModel) {
                 transfers = activeTransfers,
                 onDismiss = { viewModel.showHistorySheet(false) }
             )
-        }
-        if (uiState.showQrScanner) {
-            SecureQrScanner(onScanned = viewModel::pairSecureQr, onDismiss = { viewModel.showQrScanner(false) })
         }
         uiState.pendingLegacyPeer?.let {
             AlertDialog(
