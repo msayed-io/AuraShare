@@ -174,12 +174,12 @@ class SecurePairingProtocolTest {
         val manager = manager()
         try {
             manager.pairQr(qr())
-            relocated.enqueue(json(200, "{\"server\":\"AuraShare\",\"protocol\":3,\"server_id\":\"${id()}\"}"))
+            server.enqueue(json(200, "{\"status\":\"disconnected\"}"))
             enqueueConnectFor(relocated)
             manager.connect(id(), "127.0.0.1", relocated.port)
             assertNotNull(manager.state.value.connected)
             assertEquals(relocated.port, manager.state.value.connected!!.device.port)
-            assertEquals("/api/secure/handshake", relocated.takeRequest(5, TimeUnit.SECONDS)!!.path)
+            assertEquals("/api/secure/session/connect", relocated.takeRequest(5, TimeUnit.SECONDS)!!.path)
         } finally { manager.close(); relocated.shutdown() }
     }
 

@@ -1,5 +1,6 @@
 {
   "repository": "https://github.com/msayed-io/aurashare-desktop",
   "commit": "6946a1cf7dfc0fe1c959d3b387d75c790368a5f5",
-  "purpose": "Real Android production networking code against the exact TLS 1.3 secure receiving core in secret-free CI. Test harness is not packaged in either application."
+  "purpose": "Real Android production networking code against the exact TLS 1.3 secure receiving core in secret-free CI. Test harness is not packaged in either application.",
+  "ci_overlay": "The Linux-only receiving fixture uses a process-memory protected-store adapter gated by AURASHARE_INTEGRATION_TEST=1; desktop production source and Windows DPAPI remain unchanged."
 }

@@ -24,6 +24,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import com.example.data.network.SecureState
 import com.example.ui.components.AppleFolderDropdown
 import com.example.ui.components.DesktopCapsuleHeader
 import com.example.ui.components.FloatingBackdropHost
@@ -98,7 +99,7 @@ class FloatingChromeTest {
         var history = 0
         compose.setContent {
             MyApplicationTheme {
-                DesktopCapsuleHeader(null, { history++ }, {}, isBeingAttracted = false)
+                DesktopCapsuleHeader(null, { history++ }, {}, isBeingAttracted = false, secureState = SecureState())
             }
         }
         compose.onNodeWithTag("desktop_capsule_status").performClick()
