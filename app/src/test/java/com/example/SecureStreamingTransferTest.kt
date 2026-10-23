@@ -12,6 +12,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.cancelAndJoin
 import okhttp3.Dns
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
@@ -209,7 +211,7 @@ class SecureStreamingTransferTest {
 
     @Test fun `secure cancellation is reported as clean failure`() = runBlocking {
         server.enqueue(MockResponse().setResponseCode(200).setBody("{}"))
-        server.enqueue(MockResponse().setResponseCode(200).setBodyDelay(5, TimeUnit.SECONDS).setBody("{}"))
+        server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
         val manager = StreamingTransferManager(app)
         var thrown: Throwable? = null
         val job = CoroutineScope(Dispatchers.IO).launch {
@@ -220,8 +222,7 @@ class SecureStreamingTransferTest {
         }
         assertNotNull(server.takeRequest(2, TimeUnit.SECONDS))
         assertNotNull(server.takeRequest(2, TimeUnit.SECONDS))
-        job.cancel()
-        job.join()
+        withTimeout(1500) { job.cancelAndJoin() }
         assertTrue(thrown is CancellationException)
         assertEquals(TransferStatus.FAILED, manager.currentTransfer.value?.status)
     }
