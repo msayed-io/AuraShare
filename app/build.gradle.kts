@@ -147,3 +147,13 @@ dependencies {
   "ksp"(libs.androidx.room.compiler)
   "ksp"(libs.moshi.kotlin.codegen)
 }
+
+// Robolectric runs on a host JVM, not Android's native-library loader.
+// Use the official host distribution only for unit-test classpaths; APKs keep conscrypt-android.
+configurations.matching { it.name.contains("UnitTest") }.configureEach {
+  resolutionStrategy.dependencySubstitution {
+    substitute(module("org.conscrypt:conscrypt-android"))
+      .using(module("org.conscrypt:conscrypt-openjdk-uber:2.5.2"))
+      .because("Android and OpenJDK require different native Conscrypt distributions")
+  }
+}
