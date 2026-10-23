@@ -301,8 +301,13 @@ private fun SecureQrScannerContent(
                 if (camera?.cameraInfo?.hasFlashUnit() == true) {
                     IconButton(onClick = {
                         val next = !torchEnabled
-                        camera.cameraControl.enableTorch(next).addOnFailureListener { onError("تعذر تشغيل المصباح.") }
-                        onTorchChanged(next)
+                        val result = camera.cameraControl.enableTorch(next)
+                        result.addListener({
+                            if (sessionActive.get()) {
+                                try { result.get(); onTorchChanged(next) }
+                                catch (_: Exception) { onError("تعذر تشغيل المصباح.") }
+                            }
+                        }, ContextCompat.getMainExecutor(context))
                     }) { Text(if (torchEnabled) "إطفاء المصباح" else "المصباح", color = Color.White) }
                 }
             }

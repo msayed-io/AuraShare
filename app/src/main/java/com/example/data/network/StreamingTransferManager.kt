@@ -21,7 +21,7 @@ import okhttp3.Request
 import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.HttpUrl
-import okhttp3.toHttpUrlOrNull
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Response
 import okio.BufferedSink
 import org.json.JSONObject
@@ -211,7 +211,7 @@ class StreamingTransferManager(private val context: Context) {
         val encodedFileName = encodeModernFileName(item.name)
 
         val requestBuilder = Request.Builder()
-            .url(if (secureSession) baseUrl!!.newBuilder().addPathSegment("upload").build()
+            .url(if (secureSession) baseUrl!!.newBuilder().addPathSegment("upload").build().toString()
                 else "http://$host:$port$endpoint")
             .header("User-Agent", "AuraShare-Android-Client/1.0")
             .header("X-Device-Name", encodeModernFileName(PairingClient.deviceName()))
@@ -312,7 +312,7 @@ class StreamingTransferManager(private val context: Context) {
                 .put("thumb", thumbnails.generate(item) ?: JSONObject.NULL)
             val builder = Request.Builder()
                 .url(if (secureBaseUrl != null) secureBaseUrl.newBuilder()
-                    .addPathSegment("api").addPathSegment("transfer").addPathSegment("announce").build()
+                    .addPathSegment("api").addPathSegment("transfer").addPathSegment("announce").build().toString()
                 else "http://$host:$port/api/transfer/announce")
                 .header("User-Agent", "AuraShare-Android-Client/1.0")
                 .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull()))
