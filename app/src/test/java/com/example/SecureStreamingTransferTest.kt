@@ -126,11 +126,12 @@ class SecureStreamingTransferTest {
 
     @Test fun `secure transfer rejects wrong size or hash`() {
         val bytes = byteArrayOf(0, 1, 2, 127, -1)
-        assertFalse(runTransfer(bytes, """{"status":"completed","received":${bytes.size + 1},"sha256":"${sha(bytes)}"}""").first)
+        assertFalse(runTransfer(bytes, """{"status":"completed","received":${bytes.size}}""").first)
+        assertFalse(runTransfer(bytes, """{"status":"completed","received":${bytes.size + 1},"sha256":"${sha(bytes)}"}‎""".replace("‎", "")).first)
         assertFalse(runTransfer(bytes, """{"status":"completed","received":${bytes.size},"sha256":"${"0".repeat(64)}"}""").first)
     }
 
-    @Test fun `secure unknown size and empty files keep correct framing and digest`() {
+    @Test fun `secure unknown size and empty files keep correct framing and digest`() = runBlocking {
         val unknownBytes = byteArrayOf(8, 9, 10)
         server.enqueue(MockResponse().setResponseCode(200).setBody("{}"))
         server.enqueue(MockResponse().setResponseCode(200).setBody(completed(unknownBytes)))
