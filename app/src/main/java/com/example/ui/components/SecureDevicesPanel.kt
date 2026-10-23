@@ -22,38 +22,45 @@ fun SecureDevicesPanel(
 ) {
     var forgetId by remember { mutableStateOf<String?>(null) }
     Column(Modifier.fillMaxWidth().heightIn(max = 340.dp).verticalScroll(rememberScrollState()).padding(8.dp)) {
-        Text("الأجهزة الموثوقة", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-        Text("امسح QR من الكمبيوتر مرة واحدة، ثم وافق على الكمبيوتر. الاتصال التالي بزر فقط.", fontSize = 11.sp)
-        Text("يتطلب الاقتران الآمن إصدار الكمبيوتر الداعم لـQR وTLS؛ الإصدار القديم لا يدعمه.", fontSize = 11.sp)
-        TextButton(onClick = onScanQr, enabled = state?.busy != true && state?.trustAvailable != false, modifier = Modifier.testTag("scan_secure_qr")) {
-            Text("مسح QR للاقتران الآمن")
+        Text("الأجهزة المرتبطة", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+        Text("امسح رمز QR من الكمبيوتر ووافق هناك عند أول ربط.", fontSize = 11.sp)
+        TextButton(
+            onClick = onScanQr,
+            enabled = state?.busy != true && state?.trustAvailable != false,
+            modifier = Modifier.testTag("scan_secure_qr"),
+        ) {
+            Text("مسح QR لربط جهاز")
         }
-        state?.error?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 12.sp, modifier = Modifier.testTag("secure_error")) }
+        state?.error?.let {
+            Text(it, color = MaterialTheme.colorScheme.error, fontSize = 12.sp, modifier = Modifier.testTag("secure_error"))
+        }
         if (state?.busy == true) {
             LinearProgressIndicator(Modifier.fillMaxWidth())
-            Text("جارٍ التحقق والاتصال؛ عند أول اقتران وافق على الكمبيوتر", fontSize = 11.sp)
+            Text("جارٍ التحقق والاتصال؛ عند أول ربط وافق على الكمبيوتر.", fontSize = 11.sp)
         }
         state?.devices?.forEach { device ->
             val connected = state.connected?.device?.id == device.id
-            Column(Modifier.fillMaxWidth().padding(vertical = 4.dp).testTag("trusted_${device.id}")) {
+            Column(Modifier.fillMaxWidth().padding(vertical = 4.dp).testTag("linked_${device.id}")) {
                 Text(device.name, fontWeight = FontWeight.SemiBold)
-                Text(if (connected) "متصل بأمان — TLS 1.3" else "محفوظ — غير متصل", fontSize = 11.sp)
+                Text(if (connected) "متصل بأمان — TLS 1.3" else "مرتبط — غير متصل", fontSize = 11.sp)
                 Row {
                     TextButton(onClick = { if (connected) onDisconnect() else onConnect(device.id) }, enabled = !state.busy) {
                         Text(if (connected) "قطع الاتصال" else "اتصال")
                     }
-                    TextButton(onClick = { forgetId = device.id }, enabled = !state.busy) { Text("إلغاء الثقة") }
+                    TextButton(onClick = { forgetId = device.id }, enabled = !state.busy) { Text("إلغاء الارتباط") }
                 }
             }
         }
-        if (state != null && state.devices.isEmpty()) Text("لا توجد أجهزة موثوقة محفوظة بعد.", fontSize = 11.sp)
+        if (state != null && state.devices.isEmpty()) {
+            Text("لا توجد أجهزة مرتبطة بعد", fontSize = 11.sp, modifier = Modifier.testTag("linked_devices_empty"))
+        }
     }
     forgetId?.let { id ->
         AlertDialog(
             onDismissRequest = { forgetId = null },
-            title = { Text("إلغاء ثقة الجهاز؟") },
-            text = { Text("سيُحذف اعتماد الجهاز من هذا الهاتف. سنحاول إلغاءه على الكمبيوتر أيضًا؛ إذا كان غير متاح فقد تحتاج إزالته من الكمبيوتر لاحقًا. ستحتاج QR وموافقة جديدة لإعادة الاقتران.") },
-            confirmButton = { TextButton(onClick = { forgetId = null; onForget(id) }) { Text("إلغاء الثقة") } },
+            title = { Text("إلغاء ارتباط الجهاز؟") },
+            text = { Text("سيُحذف اعتماد الجهاز من هذا الهاتف، وستحتاج إلى مسح QR وموافقة جديدة لإعادة ربطه.") },
+            confirmButton = { TextButton(onClick = { forgetId = null; onForget(id) }) { Text("إلغاء الارتباط") } },
             dismissButton = { TextButton(onClick = { forgetId = null }) { Text("رجوع") } },
         )
     }

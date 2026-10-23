@@ -34,21 +34,6 @@ import kotlin.coroutines.resumeWithException
 
 class StreamingTransferManager(private val context: Context) {
     private val tag = "StreamingTransfer"
-
-    val httpClient = OkHttpClient.Builder()
-        .followRedirects(false)
-        .followSslRedirects(false)
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .writeTimeout(60, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
-        .retryOnConnectionFailure(false)
-        .build()
-
-    // A separate whole-call deadline includes connection, request and response headers.
-    // Redirects/retries remain disabled so the session token never leaves this peer.
-    private val announceClient = httpClient.newBuilder()
-        .callTimeout(1500, TimeUnit.MILLISECONDS)
-        .build()
     private val thumbnails = MediaThumbnailGenerator(context)
 
     private val _activeTransfers = MutableStateFlow<List<TransferRecord>>(emptyList())
@@ -59,10 +44,10 @@ class StreamingTransferManager(private val context: Context) {
 
     companion object {
         /**
-         * Encodes file name for the v2 /upload endpoint:
-         * Standard RFC 3986 percent-encoding where space is %20 and plus sign is %2B.
+         * Encodes a filename for the secure upload endpoint using RFC 3986 percent-encoding.
+         * Spaces become %20 and plus signs become %2B.
          */
-        fun encodeModernFileName(name: String): String {
+        fun encodeFileName(name: String): String {
             return try {
                 URLEncoder.encode(name, "UTF-8").replace("+", "%20")
             } catch (_: Exception) {
@@ -74,16 +59,16 @@ class StreamingTransferManager(private val context: Context) {
 
     suspend fun sendFile(
         item: MediaItem,
-        host: String,
-        port: Int,
-        token: String? = null,
-        @Suppress("UNUSED_PARAMETER") useLegacyEndpoint: Boolean = false,
+        connection: SecureConnection,
         direction: String = "top",
-        secureClient: OkHttpClient? = null,
-        secureBaseUrl: String? = null,
-        onComplete: (Boolean, String?) -> Unit
+        onComplete: (Boolean, String?) -> Unit,
     ) = withContext(Dispatchers.IO) {
         val transferId = UUID.randomUUID().toString()
+        val host = connection.device.host
+        val port = connection.device.port
+        val token = connection.token
+        val secureClient = connection.client
+        val baseUrl = connection.baseUrl.toHttpUrlOrNull()
         val edge = when (direction) {
             "top", "left", "right" -> direction
             else -> {
@@ -91,22 +76,24 @@ class StreamingTransferManager(private val context: Context) {
                 "top"
             }
         }
-        val secureSession = secureClient != null || secureBaseUrl != null
-        val baseUrl = if (secureSession) secureBaseUrl?.toHttpUrlOrNull() else null
-        if (secureSession && (secureClient == null || baseUrl == null ||
-                    baseUrl.scheme != "https" || !baseUrl.host.equals("aurashare.local", ignoreCase = true) ||
-                    baseUrl.encodedPath != "" && baseUrl.encodedPath != "/" ||
-                    baseUrl.username.isNotEmpty() || baseUrl.password.isNotEmpty() ||
-                    baseUrl.query != null || baseUrl.fragment != null)) {
-            val errorMsg = "جلسة HTTPS الآمنة تتطلب secureClient و secureBaseUrl صالحاً (HTTPS aurashare.local بلا مسار أو بيانات اعتماد)"
+        if (baseUrl == null || baseUrl.scheme != "https" ||
+            !baseUrl.host.equals("aurashare.local", ignoreCase = true) ||
+            baseUrl.port != port || (baseUrl.encodedPath != "" && baseUrl.encodedPath != "/") ||
+            baseUrl.username.isNotEmpty() || baseUrl.password.isNotEmpty() ||
+            baseUrl.query != null || baseUrl.fragment != null ||
+            !token.matches(Regex("[0-9a-f]{64}"))) {
+            val errorMsg = "تعذر التحقق من جلسة النقل الآمن؛ لم يُرسل الملف."
             onComplete(false, errorMsg)
             return@withContext
         }
-        // These are immutable per-transfer references; secure traffic never falls back to HTTP.
-        val transferClient = secureClient ?: httpClient
-        val transferAnnounceClient = if (secureSession) {
-            transferClient.newBuilder().callTimeout(1500, TimeUnit.MILLISECONDS).build()
-        } else announceClient
+        val transferClient = secureClient.newBuilder()
+            .followRedirects(false)
+            .followSslRedirects(false)
+            .retryOnConnectionFailure(false)
+            .build()
+        val transferAnnounceClient = transferClient.newBuilder()
+            .callTimeout(1500, TimeUnit.MILLISECONDS)
+            .build()
 
         val initialRecord = TransferRecord(
             id = transferId,
@@ -139,13 +126,13 @@ class StreamingTransferManager(private val context: Context) {
         }
 
         try {
-            announce(item, host, port, token, transferId, edge, baseUrl, transferAnnounceClient)
+            announce(item, token, transferId, edge, baseUrl, transferAnnounceClient)
         } catch (cancelled: CancellationException) {
             markFailed(transferId, "تم إلغاء عملية النقل")
             onComplete(false, "تم الإلغاء")
             throw cancelled
         } catch (_: Exception) {
-            val message = "تعذر تأكيد بدء النقل الآمن؛ لم يُرسل الملف ولم يُستخدم HTTP."
+            val message = "تعذر تأكيد بدء النقل الآمن؛ لم يُرسل الملف."
             markFailed(transferId, message)
             onComplete(false, message)
             return@withContext
@@ -208,13 +195,12 @@ class StreamingTransferManager(private val context: Context) {
         }
 
         val endpoint = "/upload"
-        val encodedFileName = encodeModernFileName(item.name)
+        val encodedFileName = encodeFileName(item.name)
 
         val requestBuilder = Request.Builder()
-            .url(if (secureSession) baseUrl!!.newBuilder().addPathSegment("upload").build().toString()
-                else "http://$host:$port$endpoint")
+            .url(baseUrl.newBuilder().addPathSegment(endpoint.trimStart('/')).build())
             .header("User-Agent", "AuraShare-Android-Client/1.0")
-            .header("X-Device-Name", encodeModernFileName(PairingClient.deviceName()))
+            .header("X-Device-Name", encodeFileName(DeviceName.current()))
             .header("X-File-Name", encodedFileName)
             .header("X-File-Type", item.mimeType.ifEmpty { "application/octet-stream" })
             .header("X-Transfer-Id", transferId)
@@ -224,9 +210,7 @@ class StreamingTransferManager(private val context: Context) {
             requestBuilder.header("X-File-Size", totalSize.toString())
         }
 
-        if (!token.isNullOrBlank()) {
-            requestBuilder.header("X-AuraShare-Token", token)
-        }
+        requestBuilder.header("X-AuraShare-Token", token)
 
         val request = requestBuilder.post(requestBody).build()
         val call = transferClient.newCall(request)
@@ -257,7 +241,6 @@ class StreamingTransferManager(private val context: Context) {
                 transferId = transferId,
                 totalBytesWritten = totalBytesWritten,
                 digest = digest,
-                secure = secureSession,
                 expectedSize = item.sizeBytes,
                 onComplete = onComplete
             )
@@ -287,67 +270,50 @@ class StreamingTransferManager(private val context: Context) {
 
     private suspend fun announce(
         item: MediaItem,
-        host: String,
-        port: Int,
-        token: String?,
+        token: String,
         transferId: String,
         direction: String,
-        secureBaseUrl: HttpUrl?,
-        announceClientForTransfer: OkHttpClient
+        secureBaseUrl: HttpUrl,
+        announceClientForTransfer: OkHttpClient,
     ) {
-        try {
-            val mime = item.mimeType.ifEmpty { "application/octet-stream" }
-            val kind = when {
-                mime.startsWith("image/", ignoreCase = true) -> "image"
-                mime.startsWith("video/", ignoreCase = true) -> "video"
-                else -> "other"
-            }
-            val payload = JSONObject()
-                .put("id", transferId)
-                .put("direction", direction)
-                .put("name", item.name)
-                .put("size", item.sizeBytes)
-                .put("mime", mime)
-                .put("kind", kind)
-                .put("thumb", thumbnails.generate(item) ?: JSONObject.NULL)
-            val builder = Request.Builder()
-                .url(if (secureBaseUrl != null) secureBaseUrl.newBuilder()
-                    .addPathSegment("api").addPathSegment("transfer").addPathSegment("announce").build().toString()
-                else "http://$host:$port/api/transfer/announce")
-                .header("User-Agent", "AuraShare-Android-Client/1.0")
-                .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull()))
-            if (!token.isNullOrBlank()) builder.header("X-AuraShare-Token", token)
-            val call = announceClientForTransfer.newCall(builder.build())
-            suspendCancellableCoroutine<Unit> { continuation ->
-                continuation.invokeOnCancellation { call.cancel() }
-                call.enqueue(object : Callback {
-                    override fun onFailure(call: Call, e: IOException) {
-                        if (continuation.isCancelled) return
-                        if (secureBaseUrl != null) continuation.resumeWithException(e)
-                        else {
-                            Log.w(tag, "Announcement unavailable; continuing legacy file transfer", e)
-                            continuation.resumeWith(Result.success(Unit))
-                        }
-                    }
+        val mime = item.mimeType.ifEmpty { "application/octet-stream" }
+        val kind = when {
+            mime.startsWith("image/", ignoreCase = true) -> "image"
+            mime.startsWith("video/", ignoreCase = true) -> "video"
+            else -> "other"
+        }
+        val payload = JSONObject()
+            .put("id", transferId)
+            .put("direction", direction)
+            .put("name", item.name)
+            .put("size", item.sizeBytes)
+            .put("mime", mime)
+            .put("kind", kind)
+            .put("thumb", thumbnails.generate(item) ?: JSONObject.NULL)
+        val request = Request.Builder()
+            .url(secureBaseUrl.newBuilder().addPathSegment("api").addPathSegment("transfer").addPathSegment("announce").build())
+            .header("User-Agent", "AuraShare-Android-Client/1.0")
+            .header("X-AuraShare-Token", token)
+            .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull()))
+            .build()
+        val call = announceClientForTransfer.newCall(request)
+        suspendCancellableCoroutine<Unit> { continuation ->
+            continuation.invokeOnCancellation { call.cancel() }
+            call.enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    if (!continuation.isCancelled) continuation.resumeWithException(e)
+                }
 
-                    override fun onResponse(call: Call, response: Response) {
-                        var failure: IOException? = null
-                        response.use {
-                            if (!it.isSuccessful && secureBaseUrl != null) failure = IOException("secure announce rejected (${it.code})")
-                            else if (!it.isSuccessful) Log.w(tag, "Announcement HTTP ${it.code}; continuing legacy file transfer")
-                        }
-                        if (!continuation.isCancelled) {
-                            if (failure != null) continuation.resumeWithException(failure!!)
-                            else continuation.resumeWith(Result.success(Unit))
-                        }
+                override fun onResponse(call: Call, response: Response) {
+                    val failure = response.use {
+                        if (it.isSuccessful) null else IOException("secure announce rejected (${it.code})")
                     }
-                })
-            }
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (e: Exception) {
-            if (secureBaseUrl != null) throw e
-            Log.w(tag, "Announcement failed; continuing file transfer", e)
+                    if (!continuation.isCancelled) {
+                        if (failure != null) continuation.resumeWithException(failure)
+                        else continuation.resumeWith(Result.success(Unit))
+                    }
+                }
+            })
         }
     }
 
@@ -356,7 +322,6 @@ class StreamingTransferManager(private val context: Context) {
         transferId: String,
         totalBytesWritten: Long,
         digest: MessageDigest,
-        secure: Boolean,
         expectedSize: Long,
         onComplete: (Boolean, String?) -> Unit
     ) {
@@ -365,7 +330,7 @@ class StreamingTransferManager(private val context: Context) {
             val bodyString = resp.body?.string().orEmpty()
 
             if (code == 401) {
-                val err = "رمز الاقتران غير صالح أو منتهي الصلاحية (HTTP 401). يرجى إعادة الاقتران بالحاسوب."
+                val err = "اعتماد الجلسة الآمنة غير صالح أو أُلغيت صلاحيته (401). أعد الاتصال بالجهاز المرتبط."
                 Log.e(tag, err)
                 markFailed(transferId, err)
                 onComplete(false, err)
@@ -373,7 +338,7 @@ class StreamingTransferManager(private val context: Context) {
             }
 
             if (code == 423) {
-                val err = "الخادم مشغول حالياً بتنفيذ الحد الأقصى من عمليات النقل المتزامنة (HTTP 423)"
+                val err = "الخادم مشغول حالياً بتنفيذ الحد الأقصى من عمليات النقل المتزامنة (رمز الاستجابة 423)"
                 Log.e(tag, err)
                 markFailed(transferId, err)
                 onComplete(false, err)
@@ -381,7 +346,7 @@ class StreamingTransferManager(private val context: Context) {
             }
 
             if (code == 429) {
-                val err = "تم تجاوز معدل الطلبات المسموح به في الخادم (HTTP 429)"
+                val err = "تم تجاوز معدل الطلبات المسموح به في الخادم (رمز الاستجابة 429)"
                 Log.e(tag, err)
                 markFailed(transferId, err)
                 onComplete(false, err)
@@ -396,7 +361,7 @@ class StreamingTransferManager(private val context: Context) {
                     ""
                 }
                 val detail = if (serverMsg.isNotEmpty()) ": $serverMsg" else ""
-                val err = "رفض الخادم استلام الملف (رمز الخطأ HTTP $code$detail)"
+                val err = "رفض الخادم استلام الملف (رمز الاستجابة $code$detail)"
                 Log.e(tag, err)
                 markFailed(transferId, err)
                 onComplete(false, err)
@@ -432,22 +397,20 @@ class StreamingTransferManager(private val context: Context) {
                 return
             }
 
-            // Secure sessions require exact server accounting; legacy keeps optional fields permissive.
             val received = json.optLong("received", -1L)
-            if ((secure && (!json.has("received") || received != totalBytesWritten)) ||
-                (!secure && json.has("received") && received >= 0 && received != totalBytesWritten)) {
+            if (!json.has("received") || received != totalBytesWritten) {
                 val err = "عدم تطابق حجم البيانات: الخادم استلم $received بايت بينما تم إرسال $totalBytesWritten بايت"
                 markFailed(transferId, err); onComplete(false, err); return
             }
-            if (secure && expectedSize >= 0 && totalBytesWritten != expectedSize) {
+            if (expectedSize >= 0 && totalBytesWritten != expectedSize) {
                 val err = "حجم الملف المرسل لا يطابق الحجم المعروف: أرسل $totalBytesWritten من $expectedSize بايت"
                 markFailed(transferId, err); onComplete(false, err); return
             }
 
             val computedSha256 = digest.digest().joinToString("") { "%02x".format(it) }
             val serverSha256 = json.optString("sha256", "").trim()
-            if ((secure && !Regex("^[0-9a-fA-F]{64}$").matches(serverSha256)) ||
-                (serverSha256.isNotEmpty() && !serverSha256.equals(computedSha256, ignoreCase = true))) {
+            if (!Regex("^[0-9a-fA-F]{64}$").matches(serverSha256) ||
+                !serverSha256.equals(computedSha256, ignoreCase = true)) {
                 val err = "فشل التحقق الأمني: بصمة SHA-256 مفقودة أو غير متطابقة"
                 markFailed(transferId, err); onComplete(false, err); return
             }

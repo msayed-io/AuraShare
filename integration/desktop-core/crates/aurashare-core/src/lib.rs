@@ -15,8 +15,8 @@ use percent_encoding::percent_decode_str;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{HashMap, VecDeque},
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    collections::{HashMap, HashSet, VecDeque},
+    net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket},
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
@@ -31,6 +31,10 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+pub mod protected_store;
+pub mod secure;
+pub use secure::start_secure;
+
 const MAX_SIZE: u64 = 1 << 40;
 const MAX_TERMINAL_EVENTS: usize = 100;
 const MAX_ACTIVE_EVENTS: usize = 4;
@@ -38,6 +42,11 @@ const IDLE: Duration = Duration::from_secs(30);
 const PAIRING_TTL: Duration = Duration::from_secs(120);
 const SESSION_TTL: Duration = Duration::from_secs(45);
 const MAX_PENDING: usize = 16;
+const ANNOUNCE_TTL: Duration = Duration::from_secs(10);
+const MAX_ANNOUNCE_BODY: usize = 256 * 1024;
+const MAX_ANNOUNCEMENTS: usize = 64;
+const MAX_METADATA_TEXT: usize = 512;
+const MAX_THUMB_BYTES: usize = 100 * 1024;
 const MAX_TERMINAL_PAIRINGS: usize = 16;
 
 #[derive(Clone)]
@@ -52,9 +61,11 @@ pub struct ServerInfo {
     pub port: u16,
     pub addresses: Vec<String>,
     pub download_dir: String,
+    #[serde(skip_serializing)]
     pub token: String,
     pub mdns_active: bool,
     pub mdns_error: Option<String>,
+    pub secure_port: Option<u16>,
 }
 #[derive(Debug, Clone, Serialize)]
 pub struct ConnectedDevice {
@@ -68,6 +79,8 @@ pub struct Peer {
     pub device_name: Option<String>,
     pub remote_address: String,
     pub status: String,
+    #[serde(default)]
+    pub secure: bool,
 }
 #[derive(Debug, Deserialize)]
 struct PairRequestBody {
@@ -92,6 +105,38 @@ struct Session {
     ip: IpAddr,
     last_seen: Instant,
 }
+#[derive(Clone)]
+struct Announcement {
+    id: Uuid,
+    edge: String,
+    name: String,
+    size: u64,
+    mime: String,
+    kind: String,
+    thumb: Option<String>,
+    ip: IpAddr,
+    credential_hash: [u8; 32],
+    created: Instant,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub enum ReceiveVisualEvent {
+    Start {
+        id: String,
+        edge: String,
+        name: String,
+        size: u64,
+        kind: String,
+        thumb: Option<String>,
+        mime: String,
+    },
+    Done {
+        id: String,
+    },
+    Cancel {
+        id: String,
+    },
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct TransferEvent {
@@ -113,20 +158,25 @@ struct StateInner {
     connected_devices: HashMap<String, ConnectedDevice>,
     pairings: HashMap<String, Pairing>,
     sessions: HashMap<String, Session>,
+    announcements: HashMap<Uuid, Announcement>,
+    active_visuals: HashSet<Uuid>,
 }
 pub struct SharedState {
     inner: RwLock<StateInner>,
     device_events: broadcast::Sender<Vec<ConnectedDevice>>,
     peer_events: broadcast::Sender<Vec<Peer>>,
+    visual_events: broadcast::Sender<ReceiveVisualEvent>,
 }
 impl Default for SharedState {
     fn default() -> Self {
         let (device_events, _) = broadcast::channel(64);
         let (peer_events, _) = broadcast::channel(64);
+        let (visual_events, _) = broadcast::channel(128);
         Self {
             inner: RwLock::new(StateInner::default()),
             device_events,
             peer_events,
+            visual_events,
         }
     }
 }
@@ -149,6 +199,9 @@ impl SharedState {
     pub fn peer_events(&self) -> broadcast::Sender<Vec<Peer>> {
         self.peer_events.clone()
     }
+    pub fn visual_events(&self) -> broadcast::Sender<ReceiveVisualEvent> {
+        self.visual_events.clone()
+    }
     async fn peers_locked(inner: &StateInner) -> Vec<Peer> {
         inner
             .pairings
@@ -159,12 +212,14 @@ impl SharedState {
                     device_name: Some(p.device_name.clone()),
                     remote_address: p.ip.to_string(),
                     status: "pending".into(),
+                    secure: false,
                 }),
                 "approved" if inner.sessions.values().any(|s| s.peer_id == *id) => Some(Peer {
                     id: id.clone(),
                     device_name: Some(p.device_name.clone()),
                     remote_address: p.ip.to_string(),
                     status: "connected".into(),
+                    secure: false,
                 }),
                 "approved" => None,
                 _ => None,
@@ -344,25 +399,65 @@ fn origin_rejected(req: &Request) -> bool {
     req.headers().contains_key(header::ORIGIN)
 }
 
+#[derive(Clone)]
 struct AppState {
     config: Config,
     shared: Arc<SharedState>,
     events: broadcast::Sender<TransferEvent>,
-    slots: Semaphore,
+    slots: Arc<Semaphore>,
     cancel: CancellationToken,
     server_id: String,
+    secure_auth: Option<Arc<secure::SecureService>>,
+    secure_hint: Arc<RwLock<Option<secure::SecureInfo>>>,
+    transfer_session: Option<(String, SocketAddr)>,
+}
+impl AppState {
+    async fn authorized(&self, token: &str, remote: SocketAddr) -> bool {
+        if let Some(security) = &self.secure_auth {
+            return security.authorized(token, remote, false).await;
+        }
+        constant_time_eq(token.as_bytes(), self.config.token.as_bytes())
+            || self
+                .shared
+                .session_for_token(token, remote.ip(), false)
+                .await
+    }
+    async fn transfer_authorized(&self) -> bool {
+        match (&self.secure_auth, &self.transfer_session) {
+            (Some(security), Some((token, remote))) => {
+                security.authorized(token, *remote, false).await
+            }
+            (Some(_), None) => false,
+            (None, _) => true,
+        }
+    }
 }
 pub struct RunningServer {
     pub info: ServerInfo,
     pub state: Arc<SharedState>,
     pub events: broadcast::Sender<TransferEvent>,
     pub device_events: broadcast::Sender<Vec<ConnectedDevice>>,
+    pub visual_events: broadcast::Sender<ReceiveVisualEvent>,
     cancel: CancellationToken,
     server_task: Mutex<Option<JoinHandle<()>>>,
     mdns: Mutex<Option<ServiceDaemon>>,
     mdns_fullname: Option<String>,
+    /// The isolated TLS v3 authority. Legacy HTTP never consults this object.
+    pub security: Option<Arc<secure::SecureService>>,
+    secure_server_task: Option<JoinHandle<()>>,
+    http_state: Arc<AppState>,
 }
 impl RunningServer {
+    pub(crate) fn attach_secure(
+        &mut self,
+        service: Arc<secure::SecureService>,
+        port: u16,
+        task: JoinHandle<()>,
+    ) {
+        self.info.secure_port = Some(port);
+        self.security = Some(service);
+        self.secure_server_task = Some(task);
+    }
     pub fn shutdown(&self) {
         self.cancel.cancel();
         if let Ok(mut guard) = self.mdns.try_lock() {
@@ -379,6 +474,9 @@ impl Drop for RunningServer {
     fn drop(&mut self) {
         self.cancel.cancel();
         let _ = self.server_task.get_mut().take();
+        if let Some(task) = self.secure_server_task.take() {
+            task.abort();
+        }
         if let Some(d) = self.mdns.get_mut().take() {
             if let Some(name) = &self.mdns_fullname {
                 let _ = d.unregister(name);
@@ -403,9 +501,21 @@ pub async fn start(config: Config) -> Result<RunningServer> {
     let cancel = CancellationToken::new();
     let shared = Arc::new(SharedState::default());
     let (events, _) = broadcast::channel(256);
+    let http_state = Arc::new(AppState {
+        config: config.clone(),
+        shared: shared.clone(),
+        events: events.clone(),
+        slots: Arc::new(Semaphore::new(4)),
+        cancel: cancel.clone(),
+        server_id: random_token(),
+        secure_auth: None,
+        secure_hint: Arc::new(RwLock::new(None)),
+        transfer_session: None,
+    });
     let app = Router::new()
         .route("/health", get(health))
         .route("/upload", post(upload))
+        .route("/api/transfer/announce", post(announce))
         .route("/api/v1/upload", post(upload))
         .route("/api/upload", post(legacy_upload))
         .route("/api/handshake", get(handshake))
@@ -414,14 +524,7 @@ pub async fn start(config: Config) -> Result<RunningServer> {
         .route("/api/session/heartbeat", post(heartbeat))
         .route("/api/session/disconnect", post(disconnect))
         .route("/ping", get(health))
-        .with_state(Arc::new(AppState {
-            config: config.clone(),
-            shared: shared.clone(),
-            events: events.clone(),
-            slots: Semaphore::new(4),
-            cancel: cancel.clone(),
-            server_id: random_token(),
-        }));
+        .with_state(http_state.clone());
     let (mdns, mdns_active, mdns_error, mdns_fullname) =
         advertise(&config.device_name, port, &addresses);
     let info = ServerInfo {
@@ -432,12 +535,13 @@ pub async fn start(config: Config) -> Result<RunningServer> {
         token: config.token.clone(),
         mdns_active,
         mdns_error,
+        secure_port: None,
     };
     let task_cancel = cancel.clone();
     let expiry_cancel = cancel.clone();
     let expiry_shared = shared.clone();
     tokio::spawn(async move {
-        let mut tick = tokio::time::interval(Duration::from_secs(5));
+        let mut tick = tokio::time::interval(Duration::from_millis(100));
         loop {
             tokio::select! {
                 _ = expiry_cancel.cancelled() => break,
@@ -446,6 +550,7 @@ pub async fn start(config: Config) -> Result<RunningServer> {
                     let before = SharedState::peers_locked(&inner).await;
                     expire_state(&mut inner);
                     let after = SharedState::peers_locked(&inner).await;
+                    drop(inner);
                     if before != after { let _ = expiry_shared.peer_events.send(after); }
                 }
             }
@@ -465,11 +570,81 @@ pub async fn start(config: Config) -> Result<RunningServer> {
         events,
         cancel,
         device_events: shared.device_events(),
+        visual_events: shared.visual_events(),
         server_task: Mutex::new(Some(task)),
         mdns: Mutex::new(mdns),
         mdns_fullname,
+        security: None,
+        secure_server_task: None,
+        http_state,
     })
 }
+fn secure_transfer_router(server: &RunningServer, security: Arc<secure::SecureService>) -> Router {
+    let mut state = (*server.http_state).clone();
+    state.secure_auth = Some(security);
+    Router::new()
+        .route("/upload", post(upload))
+        .route("/api/transfer/announce", post(announce))
+        .with_state(Arc::new(state))
+}
+/// Returns whether an IPv4 address is a usable unicast endpoint for a phone.
+/// This deliberately accepts non-private unicast addresses on Windows; the
+/// frozen Android 1.0.28 parser remains LAN-only and is not changed here.
+pub fn is_valid_pairing_ipv4(ip: Ipv4Addr) -> bool {
+    let octets = ip.octets();
+    !ip.is_loopback()
+        && !ip.is_unspecified()
+        && !ip.is_multicast()
+        && octets[0] != 0
+        && octets[0] < 240
+        && ip != Ipv4Addr::BROADCAST
+}
+
+fn pairing_class(ip: Ipv4Addr) -> u8 {
+    if ip.is_private() {
+        0
+    } else if !ip.is_link_local() {
+        1
+    } else {
+        2
+    }
+}
+
+fn select_pairing_ipv4(
+    route: Option<Ipv4Addr>,
+    addresses: impl IntoIterator<Item = Ipv4Addr>,
+) -> Option<Ipv4Addr> {
+    if route.is_some_and(is_valid_pairing_ipv4) {
+        return route;
+    }
+    addresses
+        .into_iter()
+        .filter(|ip| is_valid_pairing_ipv4(*ip))
+        .min_by_key(|ip| (pairing_class(*ip), ip.octets()))
+}
+
+/// Re-enumerate interfaces for each QR request; never use ServerInfo's startup snapshot.
+pub fn fresh_pairing_ipv4() -> Option<Ipv4Addr> {
+    let route = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))
+        .ok()
+        .and_then(|socket| {
+            socket.connect((Ipv4Addr::new(198, 51, 100, 1), 9)).ok()?;
+            match socket.local_addr().ok()?.ip() {
+                IpAddr::V4(ip) => Some(ip),
+                _ => None,
+            }
+        });
+    let addresses = get_if_addrs()
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(|item| match item.ip() {
+            IpAddr::V4(ip) => Some(ip),
+            _ => None,
+        });
+    select_pairing_ipv4(route, addresses)
+}
+
 fn local_ipv4_addresses() -> Vec<String> {
     let mut out = Vec::new();
     if let Ok(items) = get_if_addrs() {
@@ -487,6 +662,61 @@ fn local_ipv4_addresses() -> Vec<String> {
         out.push("127.0.0.1".into());
     }
     out
+}
+#[cfg(test)]
+mod address_tests {
+    use super::*;
+    #[test]
+    fn pairing_predicate_filters_non_unicast_reserved_ranges() {
+        for ip in [
+            Ipv4Addr::new(0, 1, 2, 3),
+            Ipv4Addr::LOCALHOST,
+            Ipv4Addr::UNSPECIFIED,
+            Ipv4Addr::BROADCAST,
+            Ipv4Addr::new(224, 0, 0, 1),
+            Ipv4Addr::new(240, 0, 0, 1),
+        ] {
+            assert!(!is_valid_pairing_ipv4(ip));
+        }
+        for ip in [
+            Ipv4Addr::new(192, 168, 1, 2),
+            Ipv4Addr::new(100, 64, 1, 2),
+            Ipv4Addr::new(8, 8, 8, 8),
+            Ipv4Addr::new(169, 254, 1, 2),
+        ] {
+            assert!(is_valid_pairing_ipv4(ip));
+        }
+    }
+    #[test]
+    fn repeated_selection_uses_only_current_addresses_including_after_disconnect() {
+        let first = select_pairing_ipv4(None, [Ipv4Addr::new(192, 168, 1, 4)]);
+        let changed = select_pairing_ipv4(None, [Ipv4Addr::new(10, 0, 0, 20)]);
+        let public_only = select_pairing_ipv4(None, [Ipv4Addr::new(203, 0, 113, 20)]);
+        assert_eq!(first, Some(Ipv4Addr::new(192, 168, 1, 4)));
+        assert_eq!(changed, Some(Ipv4Addr::new(10, 0, 0, 20)));
+        assert_ne!(first, changed);
+        assert_eq!(public_only, Some(Ipv4Addr::new(203, 0, 113, 20)));
+        assert_eq!(select_pairing_ipv4(None, []), None);
+    }
+    #[test]
+    fn pairing_selection_prefers_private_then_public_then_linklocal_and_ignores_stale_route() {
+        let selected = select_pairing_ipv4(
+            Some(Ipv4Addr::LOCALHOST),
+            [
+                Ipv4Addr::new(169, 254, 1, 2),
+                Ipv4Addr::new(8, 8, 8, 8),
+                Ipv4Addr::new(192, 168, 1, 4),
+            ],
+        );
+        assert_eq!(selected, Some(Ipv4Addr::new(192, 168, 1, 4)));
+        assert_eq!(
+            select_pairing_ipv4(
+                Some(Ipv4Addr::new(100, 64, 1, 2)),
+                [Ipv4Addr::new(192, 168, 1, 4)]
+            ),
+            Some(Ipv4Addr::new(100, 64, 1, 2))
+        );
+    }
 }
 fn advertise(
     name: &str,
@@ -551,6 +781,269 @@ fn sanitize_dns(s: &str) -> String {
 async fn health() -> impl IntoResponse {
     Json(serde_json::json!({"service":"AuraShare","version":"1"}))
 }
+#[derive(Debug, Deserialize)]
+struct AnnounceBody {
+    id: Uuid,
+    direction: Option<String>,
+    name: String,
+    size: u64,
+    mime: String,
+    kind: String,
+    thumb: Option<String>,
+}
+fn credential_hash(token: &str) -> [u8; 32] {
+    let mut h = Sha256::new();
+    h.update(token.as_bytes());
+    h.finalize().into()
+}
+fn valid_kind(k: &str) -> bool {
+    matches!(k, "image" | "video" | "other")
+}
+fn valid_mime(m: &str) -> bool {
+    !m.is_empty()
+        && m.len() <= 128
+        && m.bytes()
+            .all(|b| b.is_ascii_graphic() && b != b'"' && b != b'\\')
+}
+fn decode_b64(s: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(s.len() * 3 / 4);
+    let mut acc = 0u32;
+    let mut bits = 0u8;
+    for b in s.bytes() {
+        if b == b'=' {
+            break;
+        }
+        let v = match b {
+            b'A'..=b'Z' => b - b'A',
+            b'a'..=b'z' => b - b'a' + 26,
+            b'0'..=b'9' => b - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        };
+        acc = (acc << 6) | v as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+        }
+    }
+    Some(out)
+}
+fn thumb_data_url(raw: Option<&str>) -> Result<Option<String>> {
+    let Some(data) = raw else { return Ok(None) };
+    if data.len() > MAX_THUMB_BYTES * 2 {
+        return Err(anyhow!("thumb too large"));
+    }
+    let bytes = decode_b64(data).ok_or_else(|| anyhow!("invalid thumb base64"))?;
+    if bytes.len() > MAX_THUMB_BYTES
+        || bytes.len() < 4
+        || bytes[0] != 0xff
+        || bytes[1] != 0xd8
+        || bytes[bytes.len() - 2] != 0xff
+        || bytes[bytes.len() - 1] != 0xd9
+    {
+        return Err(anyhow!("thumb is not a JPEG"));
+    }
+    Ok(Some(format!("data:image/jpeg;base64,{data}")))
+}
+
+async fn announce(
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    State(app): State<Arc<AppState>>,
+    req: Request,
+) -> Response {
+    if origin_rejected(&req) {
+        return error(StatusCode::FORBIDDEN, "browser origins are not accepted");
+    }
+    let token = req
+        .headers()
+        .get("x-aurashare-token")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_owned();
+    if !app.authorized(&token, remote).await {
+        return error(StatusCode::UNAUTHORIZED, "invalid token");
+    }
+    let body = match axum::body::to_bytes(req.into_body(), MAX_ANNOUNCE_BODY).await {
+        Ok(b) => b,
+        Err(_) => return error(StatusCode::PAYLOAD_TOO_LARGE, "announcement too large"),
+    };
+    let input: AnnounceBody = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(_) => return error(StatusCode::BAD_REQUEST, "invalid announcement"),
+    };
+    if input.name.len() > MAX_METADATA_TEXT
+        || input
+            .name
+            .chars()
+            .any(|c| c.is_control() || is_bidi_control(c))
+        || input.size > MAX_SIZE
+        || !valid_kind(&input.kind)
+        || !valid_mime(&input.mime)
+    {
+        return error(StatusCode::BAD_REQUEST, "invalid announcement metadata");
+    };
+    if app.secure_auth.is_some()
+        && !matches!(input.direction.as_deref(), Some("top" | "left" | "right"))
+    {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "secure announcement requires a valid direction",
+        );
+    }
+    let edge = match input.direction.as_deref() {
+        Some("top") => "top".into(),
+        Some("left") => "left".into(),
+        Some("right") => "right".into(),
+        None => {
+            eprintln!("warning: missing announcement direction; using top");
+            "top".into()
+        }
+        Some(other) => {
+            eprintln!("warning: invalid announcement direction {other:?}; using top");
+            "top".into()
+        }
+    };
+    let thumb = match thumb_data_url(input.thumb.as_deref()) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("warning: ignoring malformed announcement thumbnail: {e}");
+            None
+        }
+    };
+    let a = Announcement {
+        id: input.id,
+        edge,
+        name: input.name,
+        size: input.size,
+        mime: input.mime,
+        kind: input.kind,
+        thumb,
+        ip: remote.ip(),
+        credential_hash: credential_hash(&token),
+        created: Instant::now(),
+    };
+    let mut inner = app.shared.inner.write().await;
+    let duplicate = inner.announcements.contains_key(&a.id);
+    if !duplicate && inner.active_visuals.contains(&a.id) {
+        // A retry must not replace the visual lifecycle of an already streaming body.
+        return Json(serde_json::json!({"status":"accepted"})).into_response();
+    }
+    if let Some(old) = inner.announcements.get(&a.id) {
+        if old.ip != a.ip || !constant_time_eq(&old.credential_hash, &a.credential_hash) {
+            return error(StatusCode::CONFLICT, "transfer id collision");
+        }
+    }
+    let id = a.id;
+    let evicted = if !duplicate && inner.announcements.len() >= MAX_ANNOUNCEMENTS {
+        inner
+            .announcements
+            .iter()
+            .min_by_key(|(_, a)| a.created)
+            .map(|(id, _)| *id)
+    } else {
+        None
+    };
+    if let Some(old_id) = evicted {
+        inner.announcements.remove(&old_id);
+        inner.active_visuals.remove(&old_id);
+    }
+    inner.announcements.insert(id, a.clone());
+    if !duplicate {
+        inner.active_visuals.insert(id);
+    }
+    drop(inner);
+    if let Some(old_id) = evicted {
+        let _ = app.shared.visual_events.send(ReceiveVisualEvent::Cancel {
+            id: old_id.to_string(),
+        });
+    }
+    if !duplicate {
+        let _ = app.shared.visual_events.send(ReceiveVisualEvent::Start {
+            id: id.to_string(),
+            edge: a.edge.clone(),
+            name: a.name.clone(),
+            size: a.size,
+            kind: a.kind.clone(),
+            thumb: a.thumb.clone(),
+            mime: a.mime.clone(),
+        });
+        let shared = app.shared.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(ANNOUNCE_TTL).await;
+            let removed = {
+                let mut inner = shared.inner.write().await;
+                let removed = inner.announcements.remove(&id).is_some();
+                if removed {
+                    inner.active_visuals.remove(&id);
+                }
+                removed
+            };
+            if removed {
+                let _ = shared
+                    .visual_events
+                    .send(ReceiveVisualEvent::Cancel { id: id.to_string() });
+            }
+        });
+    }
+    Json(serde_json::json!({"status":"accepted"})).into_response()
+}
+
+struct VisualGuard {
+    shared: Arc<SharedState>,
+    id: Uuid,
+    finished: bool,
+}
+impl VisualGuard {
+    fn new(shared: Arc<SharedState>, id: Uuid, started: bool, event: ReceiveVisualEvent) -> Self {
+        if started {
+            let _ = shared.visual_events.send(event);
+        }
+        Self {
+            shared,
+            id,
+            finished: false,
+        }
+    }
+    async fn done(mut self) {
+        let _ = self.shared.visual_events.send(ReceiveVisualEvent::Done {
+            id: self.id.to_string(),
+        });
+        self.finished = true;
+        self.remove().await;
+    }
+    async fn cancel(mut self) {
+        let _ = self.shared.visual_events.send(ReceiveVisualEvent::Cancel {
+            id: self.id.to_string(),
+        });
+        self.finished = true;
+        self.remove().await;
+    }
+    async fn remove(&self) {
+        self.shared
+            .inner
+            .write()
+            .await
+            .active_visuals
+            .remove(&self.id);
+    }
+}
+impl Drop for VisualGuard {
+    fn drop(&mut self) {
+        if !self.finished {
+            let shared = self.shared.clone();
+            let id = self.id;
+            tokio::spawn(async move {
+                let _ = shared
+                    .visual_events
+                    .send(ReceiveVisualEvent::Cancel { id: id.to_string() });
+                shared.inner.write().await.active_visuals.remove(&id);
+            });
+        }
+    }
+}
+
 async fn upload(
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
     State(app): State<Arc<AppState>>,
@@ -580,12 +1073,7 @@ async fn upload_request(
             .get("x-aurashare-token")
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
-        let config_ok = constant_time_eq(supplied.as_bytes(), app.config.token.as_bytes());
-        let session_ok = app
-            .shared
-            .session_for_token(supplied, remote.ip(), false)
-            .await;
-        if !config_ok && !session_ok {
+        if !app.authorized(supplied, remote).await {
             return error(StatusCode::UNAUTHORIZED, "invalid token");
         }
     }
@@ -633,14 +1121,89 @@ async fn upload_request(
         Some(_) => return error(StatusCode::BAD_REQUEST, "invalid SHA-256 header"),
         None => None,
     };
+    let token = headers
+        .get("x-aurashare-token")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let requested = headers
+        .get("x-transfer-id")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| Uuid::parse_str(v).ok());
+    let (visual_id, visual, started) = {
+        let mut inner = app.shared.inner.write().await;
+        let matched = requested.and_then(|id| {
+            let a = inner.announcements.get(&id)?;
+            (a.ip == remote.ip()
+                && constant_time_eq(&a.credential_hash, &credential_hash(token))
+                && inner.active_visuals.contains(&id))
+            .then_some(id)
+        });
+        if let Some(id) = matched {
+            let a = inner.announcements.remove(&id).unwrap();
+            (
+                id,
+                ReceiveVisualEvent::Start {
+                    id: id.to_string(),
+                    edge: a.edge,
+                    name: a.name,
+                    size: a.size,
+                    kind: a.kind,
+                    thumb: a.thumb,
+                    mime: a.mime,
+                },
+                false,
+            )
+        } else {
+            if requested.is_some() {
+                eprintln!("warning: unknown, expired, duplicate, or mismatched X-Transfer-Id; using fresh visual id");
+            }
+            let edge = match headers.get("x-direction").and_then(|v| v.to_str().ok()) {
+                Some("left") => "left",
+                Some("right") => "right",
+                Some("top") => "top",
+                None => {
+                    eprintln!("warning: missing X-Direction; using top");
+                    "top"
+                }
+                Some(x) => {
+                    eprintln!("warning: invalid X-Direction {x:?}; using top");
+                    "top"
+                }
+            };
+            let id = Uuid::new_v4();
+            inner.active_visuals.insert(id);
+            (
+                id,
+                ReceiveVisualEvent::Start {
+                    id: id.to_string(),
+                    edge: edge.into(),
+                    name: name.clone(),
+                    size: total.unwrap_or(0),
+                    kind: "other".into(),
+                    thumb: None,
+                    mime: "".into(),
+                },
+                true,
+            )
+        }
+    };
+    let visual_guard = VisualGuard::new(app.shared.clone(), visual_id, started, visual);
+
     let device = ConnectedDevice {
         id: Uuid::new_v4().to_string(),
         device_name: device_name(&headers),
         remote_address: remote.to_string(),
     };
     let device_guard = DeviceGuard::new(app.shared.clone(), device).await;
+    let transfer_app = if app.secure_auth.is_some() {
+        let mut state = (*app).clone();
+        state.transfer_session = Some((token.to_owned(), remote));
+        Arc::new(state)
+    } else {
+        app.clone()
+    };
     let result = receive(
-        app.clone(),
+        transfer_app,
         device_guard.id().to_string(),
         name,
         total,
@@ -651,8 +1214,14 @@ async fn upload_request(
     device_guard.finish().await;
     drop(permit);
     match result {
-        Ok(event) => Json(event).into_response(),
-        Err((status, msg)) => error(status, &msg),
+        Ok(event) => {
+            visual_guard.done().await;
+            Json(event).into_response()
+        }
+        Err((status, msg)) => {
+            visual_guard.cancel().await;
+            error(status, &msg)
+        }
     }
 }
 fn device_name(headers: &HeaderMap) -> Option<String> {
@@ -757,7 +1326,13 @@ async fn handshake(State(app): State<Arc<AppState>>, req: Request) -> Response {
     if origin_rejected(&req) {
         return error(StatusCode::FORBIDDEN, "browser origins are not accepted");
     }
-    Json(serde_json::json!({"server":"AuraShare","hostname":app.config.device_name.clone(),"protocol":2,"pairing_method":"approval","requires_pairing":true,"server_id":app.server_id})).into_response()
+    let mut body = serde_json::json!({"server":"AuraShare","hostname":app.config.device_name.clone(),"protocol":2,"pairing_method":"approval","requires_pairing":true,"server_id":app.server_id});
+    if let Some(hint) = &*app.secure_hint.read().await {
+        // Routing hints are untrusted on HTTP. Android still requires the QR-pinned TLS key.
+        body["secure_server_id"] = hint.server_id.clone().into();
+        body["secure_port"] = hint.tls_port.into();
+    }
+    Json(body).into_response()
 }
 impl SharedState {
     async fn session_for_token(&self, token: &str, ip: IpAddr, establish: bool) -> bool {
@@ -1041,7 +1616,7 @@ async fn receive(
             .await
         }
     };
-    let mut file = BufWriter::new(raw);
+    let mut file = BufWriter::with_capacity(64 * 1024, raw);
     let mut stream = body.into_data_stream();
     let mut last_received = 0u64;
     emit(
@@ -1079,6 +1654,19 @@ async fn receive(
             }
             None => break,
         };
+        if !app.transfer_authorized().await {
+            return cleanup_fail(
+                &app,
+                file,
+                &id,
+                &name,
+                total,
+                received,
+                StatusCode::UNAUTHORIZED,
+                "secure session was revoked or expired".into(),
+            )
+            .await;
+        }
         received = match received.checked_add(chunk.len() as u64) {
             Some(n) => n,
             None => {
@@ -1198,6 +1786,19 @@ async fn receive(
             received,
             StatusCode::BAD_REQUEST,
             "SHA-256 mismatch".into(),
+        )
+        .await;
+    }
+    if !app.transfer_authorized().await {
+        let _ = fs::remove_file(&temp).await;
+        return fail_event(
+            &app,
+            &id,
+            &name,
+            total,
+            received,
+            StatusCode::UNAUTHORIZED,
+            "secure session was revoked or expired".into(),
         )
         .await;
     }

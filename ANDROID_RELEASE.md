@@ -4,9 +4,11 @@
 
 ## What is checked
 
-On Ubuntu 24.04 with Temurin JDK 17, Gradle 9.3.1, Android platform 36.1 and build-tools 36.0.0, CI runs `testDebugUnitTest lintDebug assembleDebug`. This includes the existing Robolectric and MockWebServer integration tests. It is not a physical-phone or connected-emulator test. The export lacks complete Gradle Wrapper scripts/JAR, so CI installs the exact Gradle version from the existing wrapper properties instead of relying on a global runner version.
+On Ubuntu 24.04 with Temurin JDK 17, Gradle 9.3.1, Android platform 36.1 and build-tools 36.0.0, CI runs `testDebugUnitTest lintDebug assembleDebug`. Tests cover QR approval, TLS 1.3 identity checks, durable reconnection and revocation, secure route discovery for saved identities only, and byte-for-byte transfers against a source-pinned Rust TLS receiver. The cross-application test is required to run without skips. CI also rejects cleartext endpoints and the removed pairing surface in production Android sources. This is not a physical-phone, camera or connected-emulator test. The export lacks complete Gradle Wrapper scripts/JAR, so CI installs the exact Gradle version from the existing wrapper properties instead of relying on a global runner version.
 
 Only after those checks succeed does a protected `android-release` Environment supply the signing identity to `assembleRelease`. The pipeline verifies the APK certificate, application ID, version and launcher using `apksigner` and `aapt` before uploading any distribution artifact. Signing files live only under the runner's temporary directory and are removed with `if: always()`. Signed builds do not write Gradle caches. Publication is a separate dependent job; it alone has `contents: write`.
+
+## Versions and downloads
 
 ## Versions and downloads
 

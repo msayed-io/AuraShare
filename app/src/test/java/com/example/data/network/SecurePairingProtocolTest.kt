@@ -168,6 +168,35 @@ class SecurePairingProtocolTest {
         finally { second.close() }
     }
 
+    @Test fun savedDeviceCanMoveToAResolvedRouteOnlyWhenThePinnedTlsIdentityMatches() = runBlocking {
+        enqueueHandshake(); enqueuePairStart(); enqueueApproved(); enqueueConnect()
+        val relocated = tlsServer(cert)
+        val manager = manager()
+        try {
+            manager.pairQr(qr())
+            relocated.enqueue(json(200, "{\"server\":\"AuraShare\",\"protocol\":3,\"server_id\":\"${id()}\"}"))
+            enqueueConnectFor(relocated)
+            manager.connect(id(), "127.0.0.1", relocated.port)
+            assertNotNull(manager.state.value.connected)
+            assertEquals(relocated.port, manager.state.value.connected!!.device.port)
+            assertEquals("/api/secure/handshake", relocated.takeRequest(5, TimeUnit.SECONDS)!!.path)
+        } finally { manager.close(); relocated.shutdown() }
+    }
+
+    @Test fun forgetRemovesLocalTrustAndSendsSecureRemoteRevocation() = runBlocking {
+        enqueueHandshake(); enqueuePairStart(); enqueueApproved(); enqueueConnect()
+        server.enqueue(json(200, "{\"status\":\"disconnected\"}"))
+        server.enqueue(MockResponse().setResponseCode(204))
+        val manager = manager()
+        try {
+            manager.pairQr(qr())
+            manager.forget(id())
+            assertTrue(manager.state.value.devices.isEmpty())
+            val paths = (0 until server.requestCount).map { server.takeRequest(5, TimeUnit.SECONDS)!!.path }
+            assertTrue(paths.contains("/api/secure/device/revoke"))
+        } finally { manager.close() }
+    }
+
     @Test fun corruptStorageIsFailClosedAndNeverOverwritten() {
         storage.bytes = byteArrayOf(1, 2, 3, 4)
         val manager = manager()
@@ -205,6 +234,7 @@ class SecurePairingProtocolTest {
     private fun enqueuePairStart() = server.enqueue(json(202, "{\"request_id\":\"r1\",\"request_secret\":\"$HEX_A\"}"))
     private fun enqueueApproved() = server.enqueue(json(200, "{\"status\":\"approved\",\"server_id\":\"${id()}\",\"device_name\":\"Test Desktop\",\"credential\":\"$HEX_C\"}"))
     private fun enqueueConnect(code: Int = 200) = server.enqueue(if (code == 200) json(200, "{\"server_id\":\"${id()}\",\"token\":\"$HEX_T\"}") else MockResponse().setResponseCode(code))
+    private fun enqueueConnectFor(target: MockWebServer) = target.enqueue(json(200, "{\"server_id\":\"${id()}\",\"token\":\"$HEX_T\"}"))
     private fun json(code: Int, body: String) = MockResponse().setResponseCode(code).setHeader("Content-Type", "application/json").setBody(body)
 
     private class Tls12OnlyFactory(private val delegate: SSLSocketFactory) : SSLSocketFactory() {

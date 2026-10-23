@@ -6,6 +6,8 @@ import androidx.test.core.app.ApplicationProvider
 import com.example.data.model.AuraMediaType
 import com.example.data.model.MediaItem
 import com.example.data.model.TransferStatus
+import com.example.data.network.SecureConnection
+import com.example.data.network.TrustedDevice
 import com.example.data.network.StreamingTransferManager
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -79,14 +81,20 @@ class SecureStreamingTransferTest {
     private fun completed(bytes: ByteArray) =
         """{"status":"completed","received":${bytes.size},"sha256":"${sha(bytes)}"}"""
 
+    private fun connection(port: Int = server.port, transferClient: OkHttpClient = client) = SecureConnection(
+        TrustedDevice("a".repeat(64), "Test desktop", "127.0.0.1", port, "test-certificate"),
+        transferClient,
+        "https://aurashare.local:$port",
+        "b".repeat(64),
+    )
+
     private fun runTransfer(bytes: ByteArray, response: String, name: String = "clip.bin",
                             mime: String = "application/octet-stream"): Pair<Boolean, String?> = runBlocking {
         server.enqueue(MockResponse().setResponseCode(200).setBody("{}"))
         server.enqueue(MockResponse().setResponseCode(200).setBody(response))
         var result = false
         var error: String? = null
-        StreamingTransferManager(app).sendFile(item(bytes, name, mime), "ignored", 1,
-            secureClient = client, secureBaseUrl = "https://aurashare.local:${server.port}") { ok, message ->
+        StreamingTransferManager(app).sendFile(item(bytes, name, mime), connection()) { ok, message ->
                 result = ok; error = message
             }
         result to error
@@ -107,8 +115,7 @@ class SecureStreamingTransferTest {
             server.enqueue(MockResponse().setResponseCode(200).setBody("{}"))
             server.enqueue(MockResponse().setResponseCode(200).setBody(completed(bytes)))
             var ok = false
-            StreamingTransferManager(app).sendFile(item(bytes, name, mime), "ignored", 1,
-                secureClient = client, secureBaseUrl = "https://aurashare.local:${server.port}") { success, _ -> ok = success }
+            StreamingTransferManager(app).sendFile(item(bytes, name, mime), connection()) { success, _ -> ok = success }
             server.takeRequest()
             val upload = server.takeRequest()
             assertTrue(ok)
@@ -138,8 +145,7 @@ class SecureStreamingTransferTest {
         server.enqueue(MockResponse().setResponseCode(200).setBody("{}"))
         server.enqueue(MockResponse().setResponseCode(200).setBody(completed(unknownBytes)))
         var unknownOk = false
-        StreamingTransferManager(app).sendFile(item(unknownBytes, "unknown.bin", "application/octet-stream").copy(sizeBytes = -1), "ignored", 1,
-            secureClient = client, secureBaseUrl = "https://aurashare.local:${server.port}") { ok, _ -> unknownOk = ok }
+        StreamingTransferManager(app).sendFile(item(unknownBytes, "unknown.bin", "application/octet-stream").copy(sizeBytes = -1), connection()) { ok, _ -> unknownOk = ok }
         server.takeRequest(); val unknownUpload = server.takeRequest()
         assertTrue(unknownOk)
         assertTrue(unknownUpload.getHeader("X-File-Size") == null)
@@ -149,8 +155,7 @@ class SecureStreamingTransferTest {
         server.enqueue(MockResponse().setResponseCode(200).setBody("{}"))
         server.enqueue(MockResponse().setResponseCode(200).setBody(completed(empty)))
         var emptyOk = false
-        StreamingTransferManager(app).sendFile(item(empty, "empty.jpg", "image/jpeg"), "ignored", 1,
-            secureClient = client, secureBaseUrl = "https://aurashare.local:${server.port}") { ok, _ -> emptyOk = ok }
+        StreamingTransferManager(app).sendFile(item(empty, "empty.jpg", "image/jpeg"), connection()) { ok, _ -> emptyOk = ok }
         server.takeRequest(); val emptyUpload = server.takeRequest()
         assertTrue(emptyOk)
         assertEquals("0", emptyUpload.getHeader("X-File-Size"))
@@ -166,8 +171,7 @@ class SecureStreamingTransferTest {
         try {
             wrongCertServer.enqueue(MockResponse().setResponseCode(200).setBody("{}"))
             var ok = true
-            StreamingTransferManager(app).sendFile(item(bytes, "wrong-cert.bin", "application/octet-stream"), "ignored", 1,
-                secureClient = client, secureBaseUrl = "https://aurashare.local:${wrongCertServer.port}") { success, _ -> ok = success }
+            StreamingTransferManager(app).sendFile(item(bytes, "wrong-cert.bin", "application/octet-stream"), connection(wrongCertServer.port)) { success, _ -> ok = success }
             assertFalse(ok)
             assertEquals(0, wrongCertServer.requestCount)
         } finally { wrongCertServer.shutdown() }
@@ -181,8 +185,7 @@ class SecureStreamingTransferTest {
         try {
             wrongSanServer.enqueue(MockResponse().setResponseCode(200).setBody("{}"))
             var ok = true
-            StreamingTransferManager(app).sendFile(item(bytes, "wrong-san.bin", "application/octet-stream"), "ignored", 1,
-                secureClient = wrongSanClient, secureBaseUrl = "https://aurashare.local:${wrongSanServer.port}") { success, _ -> ok = success }
+            StreamingTransferManager(app).sendFile(item(bytes, "wrong-san.bin", "application/octet-stream"), connection(wrongSanServer.port, wrongSanClient)) { success, _ -> ok = success }
             assertFalse(ok)
             assertEquals(0, wrongSanServer.requestCount)
         } finally { wrongSanServer.shutdown() }
@@ -193,8 +196,7 @@ class SecureStreamingTransferTest {
         try {
             plain.enqueue(MockResponse().setResponseCode(200).setBody("{}"))
             var ok = true
-            StreamingTransferManager(app).sendFile(item(byteArrayOf(4, 5, 6), "plain.bin", "application/octet-stream"), "ignored", 1,
-                secureClient = client, secureBaseUrl = "https://aurashare.local:${plain.port}") { success, _ -> ok = success }
+            StreamingTransferManager(app).sendFile(item(byteArrayOf(4, 5, 6), "plain.bin", "application/octet-stream"), connection(plain.port)) { success, _ -> ok = success }
             assertFalse(ok)
             assertEquals(0, plain.requestCount)
         } finally { plain.shutdown() }
@@ -203,10 +205,56 @@ class SecureStreamingTransferTest {
         server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AT_START))
         var dropped = true
         val manager = StreamingTransferManager(app)
-        manager.sendFile(item(byteArrayOf(1, 2, 3), "drop.bin", "application/octet-stream"), "ignored", 1,
-            secureClient = client, secureBaseUrl = "https://aurashare.local:${server.port}") { success, _ -> dropped = success }
+        manager.sendFile(item(byteArrayOf(1, 2, 3), "drop.bin", "application/octet-stream"), connection()) { success, _ -> dropped = success }
         assertFalse(dropped)
         assertEquals(TransferStatus.FAILED, manager.currentTransfer.value?.status)
+    }
+
+    @Test fun `HTTP base URL is rejected before any request`() = runBlocking {
+        val secure = connection()
+        val insecure = SecureConnection(
+            secure.device,
+            client,
+            "http://aurashare.local:${server.port}",
+            secure.token,
+        )
+        var ok = true
+        StreamingTransferManager(app).sendFile(item(byteArrayOf(1, 2, 3), "insecure.bin", "application/octet-stream"), insecure) { success, _ -> ok = success }
+        assertFalse(ok)
+        assertEquals(0, server.requestCount)
+    }
+
+    @Test fun `secure announcement failure stops before upload and never follows a redirect`() = runBlocking {
+        val manager = StreamingTransferManager(app)
+        server.enqueue(MockResponse().setResponseCode(500).setBody("unavailable"))
+        var failed = false
+        manager.sendFile(item(byteArrayOf(7, 8), "announce-failure.bin", "application/octet-stream"), connection()) { ok, _ -> failed = !ok }
+        assertTrue(failed)
+        assertEquals("/api/transfer/announce", server.takeRequest().path)
+        assertEquals(1, server.requestCount)
+
+        val redirect = MockWebServer().also { it.start() }
+        try {
+            server.enqueue(MockResponse().setResponseCode(302).setHeader("Location", redirect.url("/steal")))
+            var redirected = true
+            StreamingTransferManager(app).sendFile(item(byteArrayOf(9), "redirect.bin", "application/octet-stream"), connection()) { ok, _ -> redirected = ok }
+            assertFalse(redirected)
+            assertEquals("/api/transfer/announce", server.takeRequest().path)
+            assertEquals(0, redirect.requestCount)
+            assertEquals(2, server.requestCount)
+        } finally { redirect.shutdown() }
+    }
+
+    @Test fun `authorization and rate-limit responses fail closed`() = runBlocking {
+        listOf(401, 423, 429).forEach { code ->
+            server.enqueue(MockResponse().setResponseCode(200).setBody("{}"))
+            server.enqueue(MockResponse().setResponseCode(code).setBody("{}"))
+            val manager = StreamingTransferManager(app)
+            var ok = true
+            manager.sendFile(item(byteArrayOf(code.toByte()), "failure-$code.bin", "application/octet-stream"), connection()) { success, _ -> ok = success }
+            assertFalse("status $code must not claim success", ok)
+            assertEquals(TransferStatus.FAILED, manager.currentTransfer.value?.status)
+        }
     }
 
     @Test fun `secure cancellation is reported as clean failure`() = runBlocking {
@@ -216,8 +264,7 @@ class SecureStreamingTransferTest {
         var thrown: Throwable? = null
         val job = CoroutineScope(Dispatchers.IO).launch {
             try {
-                manager.sendFile(item(ByteArray(1024) { 1 }, "cancel.bin", "application/octet-stream"), "ignored", 1,
-                    secureClient = client, secureBaseUrl = "https://aurashare.local:${server.port}") { ok, _ -> assertFalse(ok) }
+                manager.sendFile(item(ByteArray(1024) { 1 }, "cancel.bin", "application/octet-stream"), connection()) { ok, _ -> assertFalse(ok) }
             } catch (t: Throwable) { thrown = t }
         }
         assertNotNull(server.takeRequest(2, TimeUnit.SECONDS))

@@ -11,8 +11,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.statusBars
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -41,8 +39,6 @@ import com.example.ui.components.PermissionGate
 import com.example.ui.components.TransferHistorySheet
 import com.example.ui.components.rememberFluidDragController
 import com.example.ui.components.SecureQrScanner
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.TextButton
 
 @Composable
 fun AuraShareScreen(viewModel: MainViewModel) {
@@ -59,13 +55,12 @@ fun AuraShareScreen(viewModel: MainViewModel) {
     }
 
     val secureState by viewModel.secureState.collectAsState()
-    val discoveryState by viewModel.discoveryState.collectAsState()
     val currentTransfer by viewModel.currentTransfer.collectAsState()
     val activeTransfers by viewModel.activeTransfers.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val dragController = rememberFluidDragController(
         onSendItem = viewModel::sendItem,
-        onSendItemWithDirection = viewModel::sendItem
+        onSendItemWithDirection = viewModel::sendItem,
     )
     val density = LocalDensity.current
     val bottomInset = with(density) { WindowInsets.navigationBars.getBottom(this).toDp() }
@@ -79,7 +74,7 @@ fun AuraShareScreen(viewModel: MainViewModel) {
 
     PermissionGate(
         isMediaPermissionGranted = uiState.isMediaPermissionGranted,
-        onPermissionsUpdated = viewModel::checkPermissions
+        onPermissionsUpdated = viewModel::checkPermissions,
     ) {
         FluidMetaballContainer(dragController = dragController) {
             FloatingBackdropHost(
@@ -101,14 +96,16 @@ fun AuraShareScreen(viewModel: MainViewModel) {
                             // Insets belong to the scrolling content, not a fixed parent:
                             // every card can travel behind both independent floating controls.
                             contentPadding = PaddingValues(
-                                start = 12.dp, end = 12.dp,
-                                top = 80.dp, bottom = bottomInset + 96.dp
+                                start = 12.dp,
+                                end = 12.dp,
+                                top = 80.dp,
+                                bottom = bottomInset + 96.dp,
                             ),
                             header = {
                                 Row(
                                     Modifier.fillMaxWidth().padding(bottom = 12.dp),
                                     horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
+                                    verticalAlignment = Alignment.CenterVertically,
                                 ) {
                                     Text(
                                         text = when (uiState.selectedTab) {
@@ -119,15 +116,15 @@ fun AuraShareScreen(viewModel: MainViewModel) {
                                         color = MaterialTheme.colorScheme.onBackground,
                                         fontSize = 16.sp,
                                         fontWeight = FontWeight.SemiBold,
-                                        modifier = Modifier.weight(1f)
+                                        modifier = Modifier.weight(1f),
                                     )
                                     AppleFolderDropdown(
                                         folders = uiState.availableFolders,
                                         selectedFolder = uiState.selectedFolder,
-                                        onFolderSelect = viewModel::selectFolder
+                                        onFolderSelect = viewModel::selectFolder,
                                     )
                                 }
-                            }
+                            },
                         )
                     }
                 },
@@ -135,11 +132,7 @@ fun AuraShareScreen(viewModel: MainViewModel) {
                     // Drawing-only layers have no pointer handlers or click semantics.
                     FloatingTopDissolve(Modifier.align(Alignment.TopCenter))
                     DesktopCapsuleHeader(
-                        discoveryState = discoveryState,
                         currentTransfer = currentTransfer,
-                        onRefreshDiscovery = viewModel::refreshDiscovery,
-                        onPair = viewModel::pair,
-                        onDisconnect = viewModel::disconnect,
                         onOpenHistory = { viewModel.showHistorySheet(true) },
                         onCapsuleBoundsChanged = {},
                         isBeingAttracted = dragController.isAttracted,
@@ -150,7 +143,6 @@ fun AuraShareScreen(viewModel: MainViewModel) {
                         onDisconnectTrusted = viewModel::disconnectTrusted,
                         onForgetTrusted = viewModel::forgetTrusted,
                     )
-                    // AuraShare has no create/add action: use a single centered capsule.
                     FloatingBottomNavigation(
                         selectedTab = when (uiState.selectedTab) {
                             AuraMediaType.IMAGE -> "images"
@@ -158,36 +150,29 @@ fun AuraShareScreen(viewModel: MainViewModel) {
                             AuraMediaType.FILE -> "files"
                         },
                         onSelectTab = { key ->
-                            viewModel.selectTab(when (key) {
-                                "videos" -> AuraMediaType.VIDEO
-                                "files" -> AuraMediaType.FILE
-                                else -> AuraMediaType.IMAGE
-                            })
+                            viewModel.selectTab(
+                                when (key) {
+                                    "videos" -> AuraMediaType.VIDEO
+                                    "files" -> AuraMediaType.FILE
+                                    else -> AuraMediaType.IMAGE
+                                },
+                            )
                         },
                         modifier = Modifier.align(Alignment.BottomCenter)
-                            .navigationBarsPadding().padding(bottom = 16.dp)
+                            .navigationBarsPadding().padding(bottom = 16.dp),
                     )
                     SnackbarHost(
                         hostState = snackbarHostState,
                         modifier = Modifier.align(Alignment.BottomCenter)
-                            .navigationBarsPadding().padding(bottom = 80.dp)
+                            .navigationBarsPadding().padding(bottom = 80.dp),
                     )
-                }
+                },
             )
         }
         if (uiState.showHistorySheet) {
             TransferHistorySheet(
                 transfers = activeTransfers,
-                onDismiss = { viewModel.showHistorySheet(false) }
-            )
-        }
-        uiState.pendingLegacyPeer?.let {
-            AlertDialog(
-                onDismissRequest = viewModel::cancelLegacyPairing,
-                title = { Text("اتصال قديم غير مشفّر") },
-                text = { Text("هذا المسار يستخدم HTTP؛ يمكن لمن يراقب الشبكة رؤية الملفات والصور المصغرة وبيانات الاقتران. استخدمه فقط على شبكة خاصة تثق بها، أو حدّث الكمبيوتر واستخدم QR للاتصال الآمن. هل توافق على هذا الاتصال غير المشفّر؟ ستظل موافقة الكمبيوتر مطلوبة.") },
-                confirmButton = { TextButton(onClick = viewModel::confirmLegacyPairing) { Text("أوافق على الاتصال غير المشفّر") } },
-                dismissButton = { TextButton(onClick = viewModel::cancelLegacyPairing) { Text("إلغاء") } },
+                onDismiss = { viewModel.showHistorySheet(false) },
             )
         }
     }

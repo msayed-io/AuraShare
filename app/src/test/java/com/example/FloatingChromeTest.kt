@@ -24,7 +24,6 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
-import com.example.data.network.DiscoveryState
 import com.example.ui.components.AppleFolderDropdown
 import com.example.ui.components.DesktopCapsuleHeader
 import com.example.ui.components.FloatingBackdropHost
@@ -54,9 +53,7 @@ class FloatingChromeTest {
                             content = { Box(Modifier.fillMaxSize().clickable { taps++ }) },
                             overlay = {
                                 FloatingTopDissolve()
-                                DesktopCapsuleHeader(DiscoveryState.Idle, null,
-                                    onRefreshDiscovery = {}, onPair = {}, onDisconnect = {},
-                                    onOpenHistory = {}, onCapsuleBoundsChanged = {}, isBeingAttracted = false)
+                                DesktopCapsuleHeader(null, {}, {}, isBeingAttracted = false)
                             }
                         )
                     }
@@ -97,19 +94,16 @@ class FloatingChromeTest {
         compose.onNodeWithTag("folder_item_الكاميرا").assertDoesNotExist()
     }
 
-    @Test fun overflowActionsKeepRefreshAndHistoryFunctional() {
-        var refresh = 0
+    @Test fun linkedDevicesAndHistoryRemainAvailableWithoutDiscoveryControls() {
         var history = 0
         compose.setContent {
             MyApplicationTheme {
-                DesktopCapsuleHeader(DiscoveryState.Idle, null,
-                    onRefreshDiscovery = { refresh++ }, onPair = {}, onDisconnect = {},
-                    onOpenHistory = { history++ }, onCapsuleBoundsChanged = {}, isBeingAttracted = false)
+                DesktopCapsuleHeader(null, { history++ }, {}, isBeingAttracted = false)
             }
         }
-        compose.onNodeWithTag("refresh_discovery_button").performClick()
-        compose.onNodeWithTag("header_more_button").performClick()
-        compose.onNodeWithText("سجل النقل").performClick()
-        compose.runOnIdle { assertEquals(1, refresh); assertEquals(1, history) }
+        compose.onNodeWithTag("desktop_capsule_status").performClick()
+        compose.onNodeWithText("لا توجد أجهزة مرتبطة بعد").assertIsDisplayed()
+        compose.onNodeWithTag("transfer_history_button").performClick()
+        compose.runOnIdle { assertEquals(1, history) }
     }
 }

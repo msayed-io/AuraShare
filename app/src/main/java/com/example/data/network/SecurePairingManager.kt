@@ -140,7 +140,7 @@ class SecurePairingManager(
             publish()
         } catch (_: Exception) {
             records.clear(); storeCorrupt = true
-            _state.value = SecureState(trustAvailable = false, error = "تعذر فتح سجل الثقة المحمي. أُوقف الاقتران والاتصال القديم لمنع فقد الهوية؛ لم تُحذف البيانات.")
+            _state.value = SecureState(trustAvailable = false, error = "تعذر فتح سجل الثقة المحمي. أُوقف الاتصال الآمن لمنع فقد الهوية؛ لم تُحذف البيانات.")
         }
     }
 
@@ -154,7 +154,7 @@ class SecurePairingManager(
             val j = json(it)
             require(j.getString("server") == "AuraShare" && j.getInt("protocol") == 3 && j.getString("server_id") == qr.serverId)
         }
-        val body = JSONObject().put("client_id", clientId).put("device_name", PairingClient.deviceName()).put("bootstrap", qr.bootstrap)
+        val body = JSONObject().put("client_id", clientId).put("device_name", DeviceName.current()).put("bootstrap", qr.bootstrap)
         val start = request(http, qr.baseUrl, "/api/secure/pair/request", body = body).use {
             require(it.code == 202)
             val j = json(it)
@@ -265,7 +265,7 @@ class SecurePairingManager(
             try { block() }
             catch (e: CancellationException) { throw e }
             catch (_: Exception) {
-                _state.update { it.copy(error = "تعذر الاتصال الآمن أو التحقق من الهوية/الموافقة. لم يُستخدم HTTP. تحقق من الجهاز وصلاحية QR؛ إذا تغيرت الهوية فألغِ الثقة القديمة ثم أعد الاقتران.") }
+                _state.update { it.copy(error = "تعذر الاتصال الآمن أو التحقق من الهوية/الموافقة؛ لم يُستخدم اتصال غير محمي. تحقق من الجهاز وصلاحية QR؛ إذا تغيرت الهوية فألغِ الارتباط القديم ثم أعد الاقتران.") }
             } finally { _state.update { it.copy(busy = false) } }
         }
     }

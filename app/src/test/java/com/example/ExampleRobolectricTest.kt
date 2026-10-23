@@ -6,11 +6,8 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.model.AuraMediaType
 import com.example.data.model.MediaItem
-import com.example.data.network.MdnsDiscoveryManager
 import com.example.ui.AuraShareScreen
 import com.example.ui.MainViewModel
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Rule
@@ -43,12 +40,4 @@ class ExampleRobolectricTest {
         assertNotNull(viewModel.uiState.value)
     }
 
-    @Test
-    fun `test mDNS service discovery initialization and safe state`() {
-        val app = ApplicationProvider.getApplicationContext<Application>()
-        val manager = MdnsDiscoveryManager(app, CoroutineScope(Dispatchers.Main))
-        manager.startDiscovery()
-        assertNotNull(manager.state.value)
-        manager.stopDiscovery()
-    }
 }
